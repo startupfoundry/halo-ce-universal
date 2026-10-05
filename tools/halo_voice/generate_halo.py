@@ -15,7 +15,10 @@ audio image, blitz-roster-audio:qwen3-tts, has them), the job mounted at
       --entrypoint python blitz-roster-audio:qwen3-tts /halo/generate_halo.py
 
 Takes already written are kept (--overwrite replaces them); --limit N
-generates only the first N lines.
+generates only the first N lines, --only some lines by name. --take-numbers
+names the takes to make (5,6: more takes after four, each with its own
+seed), and --salt gives every take a different seed again ("<line>.<k>.<salt>").
+Beside each take, takeN.json records its seed, text, style and model.
 """
 
 import argparse
@@ -50,8 +53,9 @@ def trim(wav, rate):
     return values[max(0, int(audible[0]) - pad):min(len(values), int(audible[-1]) + pad + 1)]
 
 
-def seed_of(output, take):
-    return int(hashlib.sha256(f"{output}.{take}".encode()).hexdigest()[:8], 16) & 0x7FFFFFFF
+def seed_of(output, take, salt=""):
+    key = f"{output}.{take}" + (f".{salt}" if salt else "")
+    return int(hashlib.sha256(key.encode()).hexdigest()[:8], 16) & 0x7FFFFFFF
 
 
 def main():
@@ -60,6 +64,9 @@ def main():
     ap.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--limit", type=int, help="generate only the first N lines")
     ap.add_argument("--takes", type=int, help="takes per line (default: the job's)")
+    ap.add_argument("--only", help="comma-separated line names")
+    ap.add_argument("--take-numbers", help="comma-separated take numbers to make (default 1 to --takes)")
+    ap.add_argument("--salt", default="", help="seeds from <line>.<take>.<salt>")
     ap.add_argument("--overwrite", action="store_true")
     args = ap.parse_args()
 
@@ -69,6 +76,11 @@ def main():
         raise SystemExit(f"manifest is not {SCHEMA}")
     takes = args.takes or manifest.get("takes", 4)
     lines = manifest["lines"][:args.limit] if args.limit else manifest["lines"]
+    if args.only:
+        names = set(args.only.split(","))
+        lines = [line for line in lines if line["name"] in names]
+    numbers = ([int(n) for n in args.take_numbers.split(",")] if args.take_numbers
+               else list(range(1, takes + 1)))
 
     dtype = torch.bfloat16 if args.device.startswith("cuda") else torch.float32
     model_name = os.environ.get("QWEN_TTS_MODEL", manifest["model"])
@@ -84,12 +96,12 @@ def main():
     for index, line in enumerate(lines, 1):
         folder = job / "outputs" / line["output"]
         folder.mkdir(parents=True, exist_ok=True)
-        for take in range(1, takes + 1):
+        for take in numbers:
             path = folder / f"take{take}.wav"
             if path.exists() and not args.overwrite:
                 print(f"[{index}/{len(lines)}] keep {line['output']}/{path.name}", flush=True)
                 continue
-            seed = seed_of(line["output"], take)
+            seed = seed_of(line["output"], take, args.salt)
             random.seed(seed)
             np.random.seed(seed)
             torch.manual_seed(seed)
@@ -105,6 +117,9 @@ def main():
                 print(f"  empty or too short ({len(wav)} samples); not written", flush=True)
                 continue
             sf.write(path, wav, rate, subtype="PCM_16")
+            path.with_suffix(".json").write_text(json.dumps({
+                "seed": seed, "salt": args.salt, "text": line["text"], "style": line["style"],
+                "model": model_name}, indent=2) + "\n")
             done += 1
     print(f"wrote {done} takes in {job / 'outputs'}", flush=True)
 

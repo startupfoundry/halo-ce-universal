@@ -26,12 +26,15 @@ repository and out of port/assets:
            tone (--eq, a smoothed long-term spectrum match), to their median
            speaking level (the RMS of the 50 ms blocks louder than a tenth of
            the loudest, as the Blitz roster audio measures) and to their
-           stereo width (--stereo: the clips are stereo, with reverb)
+           stereo width (--stereo: the clips are stereo, with reverb); --only
+           masters some lines (the tone is still matched from every take),
+           --gain-db trims their level
   qa       Whisper (faster-whisper, CPU) transcribes the clips and the
            mastered takes: each take's character and word error rates against
            its text, and a speaker embedding (Resemblyzer) how alike its voice
            is to the clips'; picks the best take per line (selection.json) and
-           writes qa/index.html, an A/B listening page of clips and takes
+           writes qa/index.html, an A/B listening page of clips and takes;
+           --only checks some lines, keeping the others' results
   install  the picked takes (or --take name=N) into <data>/voice, with
            voice.json, where the game loads them (data: the folder holding
            maps/)
@@ -574,6 +577,7 @@ def master(args):
         data, rate = sf.read(str(path), dtype="float64", always_2d=True)
         return data.mean(axis=1), rate
 
+    only = set(args.only.split(",")) if args.only else None
     takes = []
     for line in manifest["lines"]:
         for path in takes_of(job, "outputs", line):
@@ -588,6 +592,12 @@ def master(args):
 
     eq = None
     report = {"target_speech_rms": target, "eq": None, "takes": {}}
+    report_path = job / "mastered" / "master.json"
+    if only is not None and report_path.is_file():
+        try:
+            report["takes"] = json.loads(report_path.read_text()).get("takes", {})
+        except json.JSONDecodeError:
+            pass
     if args.eq:
         original_power = None
         for clip in extract_doc["lines"]:
@@ -628,13 +638,16 @@ def master(args):
             report["side_to_mid_db"] = round(10 * math.log10(side_ratio), 1)
             print(f"stereo: side {10 * math.log10(side_ratio):.1f} dB under mid, as the clips' median")
 
+    trim = 10 ** (args.gain_db / 20)
     for line, path, values in takes:
+        if only is not None and line["name"] not in only:
+            continue
         if eq is not None:
             delay = (len(eq) - 1) // 2
             padded = np.concatenate([values, np.zeros(delay)])
             values = lfilter(eq, [1.0], padded)[delay:]
         level = speech_rms((values * 32768).tolist(), RATE)
-        gain = target / level if level > 0 else 1.0
+        gain = (target / level if level > 0 else 1.0) * trim
         mid = values * gain
         side = np.zeros_like(mid)
         if side_ir is not None and len(mid):
@@ -664,10 +677,11 @@ def master(args):
         report["takes"][str(out.relative_to(job))] = {
             "seconds": round(len(pcm) / RATE, 3), "gain_db": round(dbfs(gain), 2),
             "peak_dbfs": round(dbfs(float(np.max(np.abs(pcm))) / 32768), 2) if len(pcm) else None,
-            "limited_samples": limited}
+            "limited_samples": limited, "eq": eq is not None, "stereo": side_ir is not None,
+            "trim_db": args.gain_db}
         print(f"{out.relative_to(job)}: {len(pcm) / RATE:.2f} s, gain {dbfs(gain):+.1f} dB"
               + (f", {limited} samples limited" if limited else ""))
-    (job / "mastered" / "master.json").write_text(json.dumps(report, indent=2) + "\n")
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
 
 
 # ---------- qa (faster-whisper)
@@ -708,6 +722,13 @@ def qa(args):
     originals = Path(args.originals or manifest["originals"])
     extract_doc = load_extracted(originals)
     model = WhisperModel(args.whisper, device="cpu", compute_type="int8", download_root=args.models)
+    only = set(args.only.split(",")) if args.only else None
+    previous = {}
+    if only is not None and (job / "qa" / "qa.json").is_file():
+        try:
+            previous = json.loads((job / "qa" / "qa.json").read_text())
+        except json.JSONDecodeError:
+            previous = {}
 
     def transcribe(path, prompt):
         # (16 kHz mono, as Whisper hears; read here rather than by PyAV)
@@ -748,14 +769,19 @@ def qa(args):
     # (the game's words, so the model spells them as the game does)
     prompt = "Halo announcer: Killtacular. Running riot. Slayer. Oddball. Warthog."
     results = {"whisper": args.whisper, "originals": [], "lines": {}}
-    for clip in extract_doc["lines"]:
+    if previous.get("originals") and previous.get("whisper") == args.whisper:
+        # (the clips were checked before; their scores don't change)
+        results["originals"] = previous["originals"]
+        if "original_similarity" in previous:
+            results["original_similarity"] = previous["original_similarity"]
+    for clip in extract_doc["lines"] if not results["originals"] else []:
         heard = transcribe(originals / clip["file"], prompt)
         wer, cer = error_rates(clip["text"], heard)
         alike = similarity(clip_embeddings[clip["name"]], clip["name"]) if voice is not None else None
         results["originals"].append({"name": clip["name"], "text": clip["text"], "heard": heard, "wer": wer, "cer": cer,
                                      "similarity": alike})
         print(f"original {clip['name']}: {heard!r} (WER {wer:.2f}, CER {cer:.2f}, voice {alike})")
-    if voice is not None:
+    if voice is not None and "original_similarity" not in results:
         values = sorted(o["similarity"] for o in results["originals"])
         results["original_similarity"] = {"min": values[0], "median": values[len(values) // 2], "max": values[-1]}
 
@@ -764,7 +790,13 @@ def qa(args):
     if master_path.is_file():
         master_doc = json.loads(master_path.read_text()).get("takes", {})
     selection = {}
+    if only is not None:
+        names = {line["name"] for line in manifest["lines"]}
+        results["lines"] = {name: info for name, info in previous.get("lines", {}).items() if name in names}
+        selection = {name: info["best"] for name, info in results["lines"].items()}
     for line in manifest["lines"]:
+        if only is not None and line["name"] not in only:
+            continue
         scored = []
         for path in takes_of(job, "mastered", line):
             heard = transcribe(path, prompt)
@@ -981,6 +1013,8 @@ def main():
     p.add_argument("--stereo", action=argparse.BooleanOptionalAction, default=True,
                    help="give the takes the clips' stereo width (default on; off: the same in both channels)")
     p.add_argument("--ceiling", type=float, default=0.97, help="peak ceiling (full scale 1.0)")
+    p.add_argument("--only", help="comma-separated line names to master (the EQ still hears every take)")
+    p.add_argument("--gain-db", type=float, default=0.0, help="level trim after matching the clips', dB")
     p.set_defaults(func=master)
 
     p = sub.add_parser("qa", help="Whisper the takes, pick the best, write the listening page (container)")
@@ -988,6 +1022,7 @@ def main():
     p.add_argument("--originals")
     p.add_argument("--whisper", default="small.en", help="faster-whisper model")
     p.add_argument("--models", default=None, help="where faster-whisper keeps its models")
+    p.add_argument("--only", help="comma-separated line names to check (the others' results are kept)")
     p.set_defaults(func=qa)
 
     p = sub.add_parser("install", help="copy the picked takes into the game's data folder")
