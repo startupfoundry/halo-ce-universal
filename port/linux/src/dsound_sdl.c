@@ -27,7 +27,8 @@ Without an audio device, a clock thread runs the same mixer into a scratch
 buffer, so streams still drain at their real rate.
 
 audio.volume sets the master volume (default 1.0); audio.enabled = false
-skips opening a device (port_config.c).
+skips opening a device (port_config.c); debug.audio_capture writes the mix
+to a WAV file.
 */
 
 #include "platform.h"
@@ -36,6 +37,7 @@ skips opening a device (port_config.c).
 
 #include <SDL3/SDL.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -400,6 +402,88 @@ static void mix_voice(struct sdl_stream *stream, float *output, unsigned long fr
 	stream->current_right = target_right;
 }
 
+/* ---------- capture
+
+debug.audio_capture: everything mixed, as 16-bit PCM, into a WAV whose
+header is brought up to date every second (so it can be read while the game
+runs, or once it is killed) */
+
+static FILE *capture_file;
+static unsigned long capture_frames;
+static unsigned long capture_header_frames;
+
+static void capture_little(unsigned char *at, unsigned long value, int bytes)
+{
+	int index;
+
+	for (index = 0; index < bytes; index++)
+		at[index] = (unsigned char)(value >> (8 * index));
+}
+
+static void capture_header(void)
+{
+	unsigned char header[44];
+	unsigned long data_bytes = capture_frames * OUTPUT_CHANNELS * 2;
+
+	memcpy(header, "RIFF", 4);
+	capture_little(header + 4, 36 + data_bytes, 4);
+	memcpy(header + 8, "WAVEfmt ", 8);
+	capture_little(header + 16, 16, 4);
+	capture_little(header + 20, 1, 2);
+	capture_little(header + 22, OUTPUT_CHANNELS, 2);
+	capture_little(header + 24, OUTPUT_RATE, 4);
+	capture_little(header + 28, OUTPUT_RATE * OUTPUT_CHANNELS * 2, 4);
+	capture_little(header + 32, OUTPUT_CHANNELS * 2, 2);
+	capture_little(header + 34, 16, 2);
+	memcpy(header + 36, "data", 4);
+	capture_little(header + 40, data_bytes, 4);
+	fseek(capture_file, 0, SEEK_SET);
+	fwrite(header, 1, sizeof(header), capture_file);
+	fseek(capture_file, 0, SEEK_END);
+	fflush(capture_file);
+	capture_header_frames = capture_frames;
+}
+
+static void capture_open(void)
+{
+	const char *path = config_string("debug.audio_capture");
+
+	if (!*path)
+		return;
+	capture_file = fopen(path, "wb");
+	if (!capture_file)
+	{
+		platform_log("debug.audio_capture: cannot write %s", path);
+		return;
+	}
+	capture_header();
+	platform_log("debug.audio_capture: the mix goes into %s", path);
+}
+
+static void capture_write(const float *output, unsigned long frames)
+{
+	short pcm[MIX_CHUNK_FRAMES * OUTPUT_CHANNELS];
+	unsigned long done = 0;
+
+	while (done < frames)
+	{
+		unsigned long count = frames - done > MIX_CHUNK_FRAMES ? MIX_CHUNK_FRAMES : frames - done;
+		unsigned long sample;
+
+		for (sample = 0; sample < count * OUTPUT_CHANNELS; sample++)
+		{
+			float value = output[done * OUTPUT_CHANNELS + sample] * 32767.0f;
+
+			pcm[sample] = (short)(value > 32767.0f ? 32767 : value < -32768.0f ? -32768 : value);
+		}
+		fwrite(pcm, sizeof(short) * OUTPUT_CHANNELS, count, capture_file);
+		done += count;
+	}
+	capture_frames += frames;
+	if (capture_frames - capture_header_frames >= OUTPUT_RATE)
+		capture_header();
+}
+
 static void mix(float *output, unsigned long frames)
 {
 	struct sdl_stream *stream;
@@ -423,6 +507,8 @@ static void mix(float *output, unsigned long frames)
 			output[sample] = sign * (0.8f + 0.2f * tanhf(excess / 0.2f));
 		}
 	}
+	if (capture_file)
+		capture_write(output, frames);
 }
 
 /* ---------- output */
@@ -480,6 +566,7 @@ static void audio_start(void)
 		return;
 	audio_started = TRUE;
 	master_volume = (float)config_real("audio.volume");
+	capture_open();
 
 	if (config_boolean("audio.enabled") && platform_sdl_initialize())
 	{
