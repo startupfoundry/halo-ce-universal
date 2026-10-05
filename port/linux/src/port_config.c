@@ -130,6 +130,9 @@ static const struct config_setting config_settings[] =
 	{ "audio.effects_volume", _config_real, "1.0", "HALO_EFFECTS_VOLUME", _environment_value, _platform_all,
 		"The volume of every other sound (effects and speech), 0.0 to 1.0 (of\n"
 		"audio.volume)." },
+	{ "audio.voice_lines", _config_boolean, "true", "HALO_VOICE_LINES", _environment_value, _platform_all,
+		"Load the multiplayer announcer's new lines from the voice folder beside\n"
+		"maps/ (voice.json and its WAVs; tools/halo_voice.py makes them)." },
 
 	{ "input.mouse_sensitivity", _config_real, "1.0", "HALO_MOUSE_SENSITIVITY", _environment_value, _platform_desktop,
 		"How far the view turns for the mouse's movement." },
@@ -304,6 +307,11 @@ static const struct config_setting config_settings[] =
 	{ "debug.update_answer", _config_string, "\"\"", "HALO_UPDATE_ANSWER", _environment_value, _platform_desktop,
 		"The answer to the new version question, for automated tests: \"yes\",\n"
 		"\"no\" or \"never\" (do not ask again, confirmed); empty asks." },
+	{ "debug.voice_line", _config_string, "\"\"", "HALO_VOICE_LINE", _environment_value, _platform_all,
+		"The announcer's new line (audio.voice_lines) to play voice_line_seconds\n"
+		"into each multiplayer game, to hear it; empty none." },
+	{ "debug.voice_line_seconds", _config_real, "10.0", "HALO_VOICE_LINE_SECONDS", _environment_value, _platform_all,
+		"Seconds into the game that debug.voice_line plays." },
 	{ "debug.audio_capture", _config_string, "\"\"", "HALO_AUDIO_CAPTURE", _environment_value, _platform_all,
 		"A WAV file to write everything the game plays into (16-bit stereo at\n"
 		"48 kHz, as mixed); empty none." },

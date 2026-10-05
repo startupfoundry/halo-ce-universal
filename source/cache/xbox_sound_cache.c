@@ -532,13 +532,28 @@ static void sound_cache_start_loading_sound(
 		sound->cache_block_index = cache_block_index;
 		sound->cache_base_address = (unsigned long)cache_address;
 		cache_sound->sound = sound;
-		cache_file_read(
-			sound->cache_tag_index,
-			sound->samples.file_offset,
-			sound->samples.size,
-			cache_address,
-			&cache_sound->loaded,
-			FALSE);
+		/* port: a new announcer line's samples are in memory, not in the map
+		(port/linux/game/voice_lines.c) */
+		{
+			extern void const *voice_line_samples(struct sound_permutation const *permutation);
+			void const *samples = voice_line_samples(sound);
+
+			if (samples)
+			{
+				csmemcpy(cache_address, samples, sound->samples.size);
+				cache_sound->loaded = TRUE;
+			}
+			else
+			{
+				cache_file_read(
+					sound->cache_tag_index,
+					sound->samples.file_offset,
+					sound->samples.size,
+					cache_address,
+					&cache_sound->loaded,
+					FALSE);
+			}
+		}
 	}
 	else if (
 		system_milliseconds() -

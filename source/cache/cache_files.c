@@ -333,6 +333,14 @@ void scenario_tags_unload(
 	}
 	sound_cache_close();
 	texture_cache_close();
+	/* port: the announcer's new lines' tags go, once the sound cache has let
+	go of their samples (port/linux/game/voice_lines.c); before the menus',
+	whose table theirs was copied from */
+	{
+		extern void voice_lines_unloaded(void);
+
+		voice_lines_unloaded();
+	}
 	/* port: the menus' tags go, and the map's own table comes back
 	(port/linux/game/menu_tags.c): after the texture cache, which writes to
 	the bitmaps it has loaded as it closes, theirs among them */
@@ -836,6 +844,13 @@ long scenario_tags_load(
 				extern void menu_tags_loaded(char const *map_name);
 
 				menu_tags_loaded(cache_file_globals.header.name);
+			}
+			/* port: the announcer's new lines' sound tags, added to the map's
+			(port/linux/game/voice_lines.c) */
+			{
+				extern void voice_lines_loaded(char const *map_name);
+
+				voice_lines_loaded(cache_file_globals.header.name);
 			}
 			/* port: the bitmaps the high-res HUD stands for (port/linux/game/hud_hires_tags.c) */
 			{

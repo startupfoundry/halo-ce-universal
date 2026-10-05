@@ -115,6 +115,12 @@ typedef char verify_game_globals_multiplayer_information_offset[
 
 /* ---------- prototypes */
 
+/* port: the announcer's new lines (port/linux/game/voice_lines.c) */
+long voice_line_sound(long line);
+void voice_lines_update(void);
+void platform_log(char const *format, ...);
+void game_engine_play_voice_line(long line);
+
 /* game_engine_play_multiplayer_sound_immediate */
 static void _game_engine_play_multiplayer_sound(
 	long sound_index);
@@ -151,6 +157,21 @@ static void _game_engine_play_multiplayer_sound(
 	struct game_globals_multiplayer_sound_view *game_globals;
 	struct game_globals_multiplayer_information *multiplayer_information;
 	struct tag_reference *sound;
+
+	/* port: a new line's sound tag (port/linux/game/voice_lines.c) */
+	if (sound_index >= NUMBER_OF_MULTIPLAYER_INFORMATION_SOUNDS)
+	{
+		long definition_index = voice_line_sound(sound_index - NUMBER_OF_MULTIPLAYER_INFORMATION_SOUNDS);
+
+		if (definition_index != NONE)
+		{
+			long played = unspatialized_impulse_sound_new(definition_index, 1.0f);
+
+			platform_log("voice: line %ld plays as sound %lx (tag %lx)",
+				sound_index - NUMBER_OF_MULTIPLAYER_INFORMATION_SOUNDS, played, definition_index);
+		}
+		return;
+	}
 
 	global_scenario_get();
 	game_globals = (struct game_globals_multiplayer_sound_view *)scenario_get_game_globals();
@@ -198,6 +219,8 @@ void game_engine_update_multiplayer_sound(
 		if (--mp_sound_queue_count)
 			_game_engine_play_multiplayer_sound(mp_sound_queue[0].sound_index);
 	}
+	/* port: debug.voice_line (port/linux/game/voice_lines.c) */
+	voice_lines_update();
 
 	return;
 }
@@ -208,6 +231,15 @@ static long get_sound_length_in_ticks(
 	struct game_globals_multiplayer_sound_view *game_globals;
 	struct game_globals_multiplayer_information *multiplayer_information;
 	struct tag_reference *sound;
+
+	/* port: a new line's sound tag (port/linux/game/voice_lines.c) */
+	if (sound_index >= NUMBER_OF_MULTIPLAYER_INFORMATION_SOUNDS)
+	{
+		long definition_index = voice_line_sound(sound_index - NUMBER_OF_MULTIPLAYER_INFORMATION_SOUNDS);
+
+		return definition_index == NONE ? 0 :
+			(long)(sound_definition_get(definition_index)->longest_permutation_length * TICKS_PER_SECOND) / 1000;
+	}
 
 	global_scenario_get();
 	game_globals = (struct game_globals_multiplayer_sound_view *)scenario_get_game_globals();
@@ -235,7 +267,9 @@ static long get_sound_length_in_ticks(
 void game_engine_play_multiplayer_sound(
 	long sound_index)
 {
-	if (sound_is_queueable[sound_index])
+	/* port: the new lines, after the game's (port/linux/game/voice_lines.c),
+	queue as the announcer's do */
+	if (sound_index >= NUMBER_OF_MULTIPLAYER_INFORMATION_SOUNDS || sound_is_queueable[sound_index])
 	{
 		push_queued_sound(
 			sound_index,
@@ -247,6 +281,17 @@ void game_engine_play_multiplayer_sound(
 	{
 		_game_engine_play_multiplayer_sound(sound_index);
 	}
+
+	return;
+}
+
+/* port: the announcer's new line (port/linux/game/voice_lines.c), as the
+multiplayer sound after the game's */
+void game_engine_play_voice_line(
+	long line)
+{
+	if (line >= 0)
+		game_engine_play_multiplayer_sound(NUMBER_OF_MULTIPLAYER_INFORMATION_SOUNDS + line);
 
 	return;
 }
