@@ -134,6 +134,7 @@ static struct
 	int has_frame_controller;
 	int has_refresh_rate;
 	int want_depth, has_depth;
+	int has_cylinder;
 } vr;
 
 static const char *result_name(XrResult result)
@@ -330,6 +331,16 @@ static int instance_create(void)
 	{
 		enabled[enabled_count++] = XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME;
 		vr.has_depth = 1;
+	}
+	/* the HUD on a cylinder about the head, where the runtime has them
+	(Monado; not SteamVR 2.18 on the Steam Frame, whose HUD is then a quad
+	with the curve in its image: vr_visor.c). HALO_VR_NO_CYLINDER=1 does
+	without, to test that on a runtime that has them. */
+	if (extension_listed(extensions, count, XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME) &&
+		!getenv("HALO_VR_NO_CYLINDER"))
+	{
+		enabled[enabled_count++] = XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME;
+		vr.has_cylinder = 1;
 	}
 	free(extensions);
 
@@ -727,6 +738,12 @@ int host_vr_initialize(struct vr_host_info *info)
 		return 0;
 	}
 	info->depth = vr.has_depth && swapchain_create(VR_SWAPCHAIN_DEPTH, info->eye_width, info->eye_height, 2, info);
+	if (info->visor_width > 0 && info->visor_height > 0 &&
+		!swapchain_create(VR_SWAPCHAIN_VISOR, info->visor_width, info->visor_height, 1, info))
+	{
+		info->visor_width = info->visor_height = 0;
+	}
+	info->cylinder = vr.has_cylinder;
 
 	space.poseInReferenceSpace.orientation.w = 1.0f;
 	space.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
@@ -760,10 +777,11 @@ int host_vr_initialize(struct vr_host_info *info)
 		if (current)
 			current(vr.session, &info->refresh_rate);
 	}
-	host_logf(HOST_LOG_INFO, "vr: %s, eyes %dx%d (recommended %dx%d), HUD %dx%d, %s space", info->system_name,
-		info->eye_width, info->eye_height, info->recommended_width, info->recommended_height,
-		info->hud_width, info->hud_height,
-		space.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE ? "stage" : "local");
+	host_logf(HOST_LOG_INFO, "vr: %s, eyes %dx%d (recommended %dx%d), HUD %dx%d, visor %dx%d, %s space%s",
+		info->system_name, info->eye_width, info->eye_height, info->recommended_width, info->recommended_height,
+		info->hud_width, info->hud_height, info->visor_width, info->visor_height,
+		space.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE ? "stage" : "local",
+		vr.has_cylinder ? ", cylinder layers" : "");
 	return 1;
 }
 
@@ -1033,7 +1051,9 @@ void host_vr_frame_end(const struct vr_host_layers *layers)
 	XrCompositionLayerProjectionView views[2];
 	XrCompositionLayerDepthInfoKHR depths[2];
 	XrCompositionLayerQuad quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
-	const XrCompositionLayerBaseHeader *submitted[2];
+	XrCompositionLayerQuad visor = { XR_TYPE_COMPOSITION_LAYER_QUAD };
+	XrCompositionLayerCylinderKHR cylinder = { XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR };
+	const XrCompositionLayerBaseHeader *submitted[3];
 	uint32_t count = 0;
 	int eye;
 
@@ -1044,6 +1064,7 @@ void host_vr_frame_end(const struct vr_host_layers *layers)
 	host_vr_release(VR_SWAPCHAIN_EYES);
 	host_vr_release(VR_SWAPCHAIN_HUD);
 	host_vr_release(VR_SWAPCHAIN_DEPTH);
+	host_vr_release(VR_SWAPCHAIN_VISOR);
 	if (timing.enabled > 0)
 		timing.release += seconds_now();
 	if (layers && layers->projection)
@@ -1080,7 +1101,38 @@ void host_vr_frame_end(const struct vr_host_layers *layers)
 		projection.views = views;
 		submitted[count++] = (const XrCompositionLayerBaseHeader *)&projection;
 	}
-	if (layers && layers->hud)
+	if (layers && layers->visor && vr.swapchains[VR_SWAPCHAIN_VISOR])
+	{
+		/* the visor's rim, under the HUD: premultiplied, as the HUD is (the
+		image last released, where none was drawn this frame) */
+		visor.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+		visor.space = vr.view_space;
+		visor.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+		visor.subImage.swapchain = vr.swapchains[VR_SWAPCHAIN_VISOR];
+		visor.subImage.imageRect.extent.width = vr.swapchain_width[VR_SWAPCHAIN_VISOR];
+		visor.subImage.imageRect.extent.height = vr.swapchain_height[VR_SWAPCHAIN_VISOR];
+		pose_to_xr(&layers->visor_pose, &visor.pose);
+		visor.size.width = layers->visor_size[0];
+		visor.size.height = layers->visor_size[1];
+		submitted[count++] = (const XrCompositionLayerBaseHeader *)&visor;
+	}
+	if (layers && layers->hud && layers->hud_cylinder && vr.has_cylinder)
+	{
+		/* (as the quad below) */
+		cylinder.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+		cylinder.space = layers->hud_head_locked ? vr.view_space : vr.play_space;
+		cylinder.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+		cylinder.subImage.swapchain = vr.swapchains[VR_SWAPCHAIN_HUD];
+		cylinder.subImage.imageRect.extent.width = vr.swapchain_width[VR_SWAPCHAIN_HUD];
+		cylinder.subImage.imageRect.extent.height = vr.swapchain_height[VR_SWAPCHAIN_HUD];
+		pose_to_xr(&layers->hud_pose, &cylinder.pose);
+		cylinder.radius = layers->hud_radius;
+		cylinder.centralAngle = layers->hud_angle;
+		/* (the arc's length over its height) */
+		cylinder.aspectRatio = layers->hud_radius * layers->hud_angle / layers->hud_size[1];
+		submitted[count++] = (const XrCompositionLayerBaseHeader *)&cylinder;
+	}
+	else if (layers && layers->hud)
 	{
 		/* the game's HUD is drawn over the cleared image with its colour
 		already multiplied by its coverage, as the compositor's default
