@@ -79,10 +79,14 @@ draws it) */
 struct vr_visor_image
 {
 	int shown;
-	/* the image's edges and what the eyes see of the glass, from the middle
-	of the head (tangents at the glass's distance: left, right, up, down) */
+	/* the image's edges, what the eyes see of the glass along their views'
+	edges (their middles: where its shade is), and all that they see of it
+	(every corner of their views: past it, to the image's edges, the glass
+	fades to nothing), from the middle of the head (tangents at the glass's
+	distance: left, right, up, down) */
 	float extent[4];
 	float fov[4];
+	float clear[4];
 	/* the frame about the visor (vr.visor_frame, 0 to 1) */
 	float frame;
 	/* the warning's glow on the rim (linear, premultiplied: added) */

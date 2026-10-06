@@ -5661,7 +5661,9 @@ facing and grazing, as bright as the game's glow on the armour, and as the
 shields recharge, filling the glass to their level, flashing as they are
 full. Less in the middle of the glass than at its edges. Drawn over what
 the eyes see of the glass (tangents from the middle of the head), its rim a
-rounded rectangle of their angles. The image is sRGB: its light is worked
+rounded rectangle of their angles; past all that they see, to the image's
+edges, it all fades to nothing (vr_visor.c, visor_extent), so that its edges
+are never seen. The image is sRGB: its light is worked
 out linearly and written encoded, premultiplied (the glows' alpha 0: light
 added). Other effects on the glass (water, dirt, cracks, reflections) would
 be drawn here too, over the glass's tint and under its energy. */
@@ -5669,7 +5671,8 @@ static void vr_draw_visor(void)
 {
 	static GLuint program, sampler;
 	static BOOL failed;
-	static GLint size_location, extent_location, fov_location, rim_location, plasma_location, level_location;
+	static GLint size_location, extent_location, fov_location, clear_location, rim_location, plasma_location;
+	static GLint level_location;
 	static GLint perpendicular_location, parallel_location, noise_location[2];
 	static const char vertex_source[] =
 		"#version 450 core\n"
@@ -5684,6 +5687,9 @@ static void vr_draw_visor(void)
 		/* (tangents: left, right, up, down) */
 		"uniform vec4 extent;\n"
 		"uniform vec4 fov;\n"
+		/* (all that the eyes see: past it, to the extent, the glass fades
+		out) */
+		"uniform vec4 clear;\n"
 		/* the glow on the rim (rgb) and the frame's strength (a) */
 		"uniform vec4 rim;\n"
 		/* the plasma: the game's glow, the recharge, its level and the flash
@@ -5745,6 +5751,12 @@ static void vr_draw_visor(void)
 		"			mix(0.06, 1.0, smoothstep(0.45, 0.97, r)) * (1.0 - shade * 0.6);\n"
 		"		light.rgb += pow(energy * amount, vec3(2.2)) * 1.0;\n"
 		"	}\n"
+		/* past all that the eyes see, fading to nothing at the image's
+		edges, all of it (light and shade): no edge to see */
+		"	vec4 fade = clamp((vec4(t.x, -t.x, -t.y, t.y) + vec4(-extent.x, extent.y, extent.z, -extent.w)) /\n"
+		"		(vec4(-extent.x, extent.y, extent.z, -extent.w) - vec4(-clear.x, clear.y, clear.z, -clear.w)), 0.0, 1.0);\n"
+		"	fade = fade * fade * (3.0 - 2.0 * fade);\n"
+		"	light *= fade.x * fade.y * fade.z * fade.w;\n"
 		"	colour = vec4(pow(clamp(light.rgb, 0.0, 1.0), vec3(1.0 / 2.2)), clamp(light.a, 0.0, 1.0));\n"
 		"}\n";
 	struct vr_visor_image look;
@@ -5776,6 +5788,7 @@ static void vr_draw_visor(void)
 		size_location = glGetUniformLocation(program, "size");
 		extent_location = glGetUniformLocation(program, "extent");
 		fov_location = glGetUniformLocation(program, "fov");
+		clear_location = glGetUniformLocation(program, "clear");
 		rim_location = glGetUniformLocation(program, "rim");
 		plasma_location = glGetUniformLocation(program, "plasma");
 		level_location = glGetUniformLocation(program, "level");
@@ -5821,6 +5834,7 @@ static void vr_draw_visor(void)
 	glUniform2f(size_location, (GLfloat)VR_VISOR_IMAGE_SIZE, (GLfloat)VR_VISOR_IMAGE_SIZE);
 	glUniform4fv(extent_location, 1, look.extent);
 	glUniform4fv(fov_location, 1, look.fov);
+	glUniform4fv(clear_location, 1, look.clear);
 	{
 		float rim[4], plasma[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, noise[2][4], scale[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
@@ -5883,9 +5897,12 @@ each eye sees its own side of it only, the brow and the chin with both
 eyes, in depth. Its vertices are made here from their index (no buffers):
 rings about the opening (the lip fading in over a few degrees, the bevel,
 the frame beyond), each a loop of segments. Dark armour, its bevel lighter
-than the frame behind it and its lip catching the light from above. Its
-depth is the nearest, for the compositor's reprojection, where it covers
-the world. */
+than the frame behind it. Nothing of it is ever a line or an edge: it fades
+in smoothly from the lip and out again at the frame's far ring (in case a
+wide or turned view sees past it), with no highlight along it (a bright
+thread along the brow read as a line across the view), and what is behind
+an eye is clipped, not thrown across its view. Its depth is the nearest,
+for the compositor's reprojection, where it covers the world. */
 static void vr_draw_rim(void)
 {
 	enum { SEGMENTS = 128, RINGS = 4 };
@@ -5907,16 +5924,13 @@ static void vr_draw_rim(void)
 		"uniform float distance;\n"
 		/* (how far in from the edges its lip begins: a fraction of them) */
 		"uniform float reach;\n"
-		"out vec2 around;\n"
-		"out float lip;\n"
-		"out float ring_alpha;\n"
+		"out float ring_at;\n"
 		"out float ring_shade;\n"
 		"out float presence;\n"
 		"const int SEGMENTS = 128;\n"
 		/* (the rings: out from the opening, toward the face) */
 		"const float out_by[4] = float[4](0.0, 0.0, 1.03, 1.7);\n"
 		"const float nearer[4] = float[4](1.0, 0.99, 0.9, 0.5);\n"
-		"const float alpha[4] = float[4](0.0, 0.5, 0.85, 0.85);\n"
 		"const float shading[4] = float[4](1.7, 1.0, 0.55, 0.3);\n"
 		"const ivec2 corners[6] = ivec2[6](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(0, 1), ivec2(1, 0), ivec2(1, 1));\n"
 		"void main()\n"
@@ -5940,37 +5954,33 @@ static void vr_draw_rim(void)
 		"	vec3 e = vec3(dot(rows[eye * 3], vec4(v, 1.0)), dot(rows[eye * 3 + 1], vec4(v, 1.0)),\n"
 		"		dot(rows[eye * 3 + 2], vec4(v, 1.0)));\n"
 		"	vec4 f = fov[eye];\n"
-		"	float w = max(-e.z, 1e-4);\n"
-		"	vec2 tangent = e.xy / w;\n"
-		"	vec2 ndc = vec2((2.0 * tangent.x - (f.y + f.x)) / (f.y - f.x), (2.0 * tangent.y - (f.z + f.w)) / (f.z - f.w));\n"
+		/* (linear in the eye's coordinates, not divided here, so that what
+		is behind the eye is clipped, not thrown across the view) */
+		"	float w = -e.z;\n"
+		"	vec2 clip = vec2((2.0 * e.x - (f.y + f.x) * w) / (f.y - f.x), (2.0 * e.y - (f.z + f.w) * w) / (f.z - f.w));\n"
 		/* (the eye pass's clip space is upside down: its upper left origin) */
-		"	gl_Position = vec4(ndc.x * w, -ndc.y * w, 0.0, w);\n"
-		"	around = u;\n"
-		"	lip = ring == 1 ? 1.0 : 0.0;\n"
-		"	ring_alpha = alpha[ring];\n"
+		"	gl_Position = vec4(clip.x, -clip.y, 0.0, w);\n"
+		"	ring_at = float(ring);\n"
 		"	ring_shade = shading[ring];\n"
 		"}\n";
 	static const char fragment_source[] =
 		"#version 450 core\n"
 		"uniform float strength;\n"
 		"uniform float depth_pass;\n"
-		"in vec2 around;\n"
-		"in float lip;\n"
-		"in float ring_alpha;\n"
+		"in float ring_at;\n"
 		"in float ring_shade;\n"
 		"in float presence;\n"
 		"out vec4 colour;\n"
 		"void main()\n"
 		"{\n"
-		"	float a = ring_alpha * presence * strength;\n"
+		/* (from nothing at the lip to the bevel's 0.85 and back to nothing at
+		the far ring, smoothly: no crease to read as a line) */
+		"	float a = 0.85 * smoothstep(0.0, 2.0, ring_at) * (1.0 - smoothstep(2.0, 3.0, ring_at)) * presence * strength;\n"
 		"	if (depth_pass > 0.5 && a < 0.5)\n"
 		"		discard;\n"
-		/* dark armour, olive in the dark; the lip catching the light from
-		above */
+		/* dark armour, olive in the dark */
 		"	vec3 armour = vec3(0.085, 0.092, 0.075) * ring_shade;\n"
-		"	float facing = max(dot(normalize(around + vec2(0.0, 1e-4)), normalize(vec2(-0.35, 1.0))), 0.0);\n"
-		"	vec3 glint = vec3(0.62, 0.62, 0.58) * 0.32 * pow(lip, 3.0) * pow(facing, 3.0) * presence * strength;\n"
-		"	colour = vec4(armour * a + (depth_pass > 0.5 ? vec3(0.0) : glint), a);\n"
+		"	colour = vec4(armour * a, a);\n"
 		"}\n";
 	struct vr_visor_rim rim;
 	struct render_target_entry *depth = NULL;
