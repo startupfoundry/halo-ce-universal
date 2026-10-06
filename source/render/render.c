@@ -165,6 +165,7 @@ void vr_render_end(void);
 boolean vr_render_hud_camera(struct render_camera *camera);
 boolean vr_render_weapon_camera(struct render_camera *camera);
 void vr_render_crosshairs(void);
+void vr_seat_blink_draw(void);
 
 static boolean render_vr_eye_pass;
 #endif
@@ -449,6 +450,8 @@ static void render_window(
 		if (render_vr_eye_pass)
 		{
 			rasterizer_screen_flash();
+			/* a blink through a jump of the eye (port/linux/game/vr_seat.c) */
+			vr_seat_blink_draw();
 			/* the crosshairs where the aim meets the world, in the eyes */
 			vr_render_crosshairs();
 		}

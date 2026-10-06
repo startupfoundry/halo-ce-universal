@@ -250,6 +250,11 @@ static const struct config_setting config_settings[] =
 		"The view in a vehicle's seat: \"first_person\" from your head where you\n"
 		"sit, level with the horizon; \"third_person\" the game's camera following\n"
 		"the vehicle." },
+	{ "vr.seat_motion", _config_string, "\"still\"", "HALO_VR_SEAT_MOTION", _environment_value, _platform_desktop,
+		"With vr.vehicle_view = \"first_person\": \"still\" the eye stays put in\n"
+		"the vehicle, riding with it but not with the body climbing in and out,\n"
+		"a turret's turning or flinches, and blinks between its places; \"head\"\n"
+		"it follows the seated body's head as the game animates it." },
 	{ "vr.turn", _config_string, "\"snap\"", "HALO_VR_TURN", _environment_value, _platform_desktop,
 		"How the right stick turns: \"snap\" in steps (vr.snap_turn_angle),\n"
 		"\"smooth\" continuously (vr.smooth_turn_speed); with vr.aim = \"gamepad\",\n"

@@ -1,21 +1,42 @@
 /*
 VR_SEAT.C
 
-The VR mode's view through a vehicle's seat (HALO_VR; vr.vehicle_view,
-port/linux/README.md "VR"), for vr_render.c, and its automated test.
+The VR mode's view from a vehicle's seat (HALO_VR; vr.vehicle_view,
+vr.seat_motion, port/linux/README.md "VR"), for vr_render.c, and its
+automated test.
+
+With vr.vehicle_view = "first_person" the eye is in the seat, and the game
+animates the seated body: getting in is most of a second of climbing (the
+eye swept 2.7 to 3.4 m, up to half a metre a frame), getting out a third of
+a second to a second (1.7 to 2.7 m), and a turret's seat swings about the
+turret's pivot as it aims (the Shade's eye some 0.65 m from it), with
+flinches when hit. None of
+that is the player's own motion. With vr.seat_motion = "still" the eye stays
+where it is in the vehicle instead: as the body climbs in, where it was
+standing; once seated, where the head then is, until the player is out; and
+it moves between those (and from the seat to where the player stands, once
+out) in a blink: the view darkens with the eye held, the eye moves in the
+dark, and the view lightens. The vehicle's own motion it rides with, and
+the view stays level and turned by the head and the stick alone
+(vr_render.c). Any other jump of the eye between the game's camera and the
+seat's, or between the game's first-person camera and the one following a
+vehicle (vr.vehicle_view = "third_person"), is blinked through the same way:
+the director cuts between those cameras in the VR mode (director.c) rather
+than flying between them for a second.
 
 debug.vr_test_seat seats the first player in the nearest vehicle's seat
-whose label has the given text in it ("gunner", "driver", ...), as the
-action button does (unit_enter_seat: the seat's entering animation), and
+whose label has the given text in it ("gunner", "driver", ...), standing at
+its entrance (put there two seconds before), as the action button does (unit_enter_seat: the seat's entering animation), and
 takes them out as it does (unit_try_and_exit_seat) some seconds later. From
 a second before getting in to a few seconds after getting out, each frame's
 centre camera is logged against the last's, how far it moved and turned,
-with the phase (on foot, entering, seated, exiting), and each phase's sums
-as it ends: the view's motion the player did not make, with the head held
-still (debug.vr_test_head = "0").
+with the phase (on foot, entering, seated, exiting) and the blink's
+darkness, and each phase's sums as it ends: the view's motion the player
+did not make, with the head held still (debug.vr_test_head = "0"), and how
+much of it was seen (not in the dark).
 
-Called from the main loop every frame (main.c), and with each VR frame's
-centre camera (vr_render.c).
+Called from the main loop every frame (main.c), with each VR frame's centre
+camera (vr_render.c), and in the eye pass (render.c).
 */
 
 #ifdef HALO_VR
@@ -28,6 +49,9 @@ centre camera (vr_render.c).
 #include "units/units.h"
 #include "units/unit_definitions.h"
 #include "tag_files/tag_files.h"
+#include "camera/director.h"
+#include "render/render_cameras.h"
+#include "rasterizer/rasterizer.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -35,10 +59,33 @@ centre camera (vr_render.c).
 
 /* the platform layer's (port/linux/src/port_config.c) */
 const char *config_string(char const *name);
+unsigned long config_changes(void);
 void platform_log(char const *format, ...);
 
 #define METRES_PER_WORLD_UNIT 3.048f
 #define DEGREES_PER_RADIAN (180.0f / 3.14159265f)
+/* a blink: for a jump of the eye further than this (metres), the view
+darkens over this time (seconds), the eye moves, and it lightens over
+this */
+#define BLINK_DISTANCE 0.1f
+#define BLINK_DARKENING_SECONDS 0.1f
+#define BLINK_LIGHTENING_SECONDS 0.15f
+/* the screen flash that darkens (rasterizer_xbox_screen_effect.c's
+_render_screen_flash_type_lighten: the colour added over the view dimmed by
+its alpha) */
+#define SCREEN_FLASH_LIGHTEN 1
+
+/* where the eye is: the game's first-person camera, another of the game's
+(following a vehicle, the dead's), the seated head (vr.seat_motion =
+"head"), or held in the vehicle as the body climbs in or once seated */
+enum
+{
+	_seat_source_first_person,
+	_seat_source_game,
+	_seat_source_head,
+	_seat_source_getting_in,
+	_seat_source_seated
+};
 
 enum
 {
@@ -59,6 +106,30 @@ static char const *const seat_phase_names[NUMBER_OF_SEAT_PHASES] =
 
 static struct
 {
+	/* the eye last frame: where it was, in the world and in the vehicle
+	it rode (else NONE), and from which source */
+	boolean shown_valid;
+	real_point3d shown;
+	long shown_vehicle_index;
+	real_point3d shown_local;
+	short source;
+	/* the seat the player is in (else NONE), counted each time it changes,
+	and the count the eye was shown for */
+	long seat_vehicle_index;
+	short seat_index;
+	long seat_serial;
+	long shown_serial;
+	/* vr.seat_motion = "still": the eye held as the body climbs in, and
+	once seated, in the vehicle's frame */
+	boolean frozen;
+	real_point3d frozen_local;
+	boolean anchored;
+	real_point3d anchor_local;
+	/* the blink: darkening toward the jump, and how dark (0 to 1) */
+	boolean blinking;
+	real darkness;
+	long blinks;
+
 	boolean checked;
 	/* debug.vr_test_seat: the seat's label's text, when to get in and for
 	how long (seconds) */
@@ -69,6 +140,7 @@ static struct
 	/* the game's time (ticks) the test got in, and whether it got out */
 	long entered_time;
 	boolean brought;
+	boolean approached;
 	boolean entered;
 	boolean exited;
 	/* the log: the last frame's camera, its phase, and the phase's sums */
@@ -83,8 +155,218 @@ static struct
 	real phase_turn;
 	real phase_largest_move;
 	real phase_largest_turn;
+	real phase_seen_distance;
+	real phase_largest_seen_move;
 	long frame;
 } vr_seat;
+
+/* ---------- the view */
+
+/* the first player's unit, else NONE */
+static long first_player_unit(void)
+{
+	long player_index = local_player_get_player_index(0);
+
+	return player_index == NONE ? NONE : player_get(player_index)->unit_index;
+}
+
+/* vr.seat_motion: the eye stays put in the vehicle ("still"), else it is
+the seated player's head as the game animates it ("head") */
+static boolean seat_still(void)
+{
+	static unsigned long read_at = (unsigned long)-1;
+	static boolean still;
+
+	if (read_at != config_changes())
+	{
+		read_at = config_changes();
+		still = strcmp(config_string("vr.seat_motion"), "head") != 0;
+	}
+	return still;
+}
+
+/* a point in a vehicle's frame (its root node's, posed between ticks as it
+is drawn) and back */
+static void vehicle_to_local(long vehicle_index, real_point3d const *point, real_point3d *local)
+{
+	matrix4x3_inverse_transform_point(object_get_node_matrix(vehicle_index, 0), point, local);
+}
+
+static void vehicle_from_local(long vehicle_index, real_point3d const *local, real_point3d *point)
+{
+	matrix4x3_transform_point(object_get_node_matrix(vehicle_index, 0), local, point);
+}
+
+/* where the eye was last frame: in the world, and in the vehicle it rode
+then (the place held through a blink's darkening) */
+static void shown_position(real_point3d *position)
+{
+	if (vr_seat.shown_vehicle_index != NONE && object_try_and_get(vr_seat.shown_vehicle_index))
+		vehicle_from_local(vr_seat.shown_vehicle_index, &vr_seat.shown_local, position);
+	else
+		*position = vr_seat.shown;
+}
+
+/* each VR frame (vr_render.c), the eye's place before the head's offset:
+the game's camera, else in a vehicle's seat (seated_unit_index, with
+vr.vehicle_view = "first_person") the seat's, and a blink through any jump
+between the two. In: the game's camera; out: the eye. aiming: the view is
+the player's (not a cinematic's or the menus') */
+void vr_seat_eye(long seated_unit_index, boolean aiming, real seconds, real_point3d *position)
+{
+	real_point3d desired = *position;
+	long vehicle_index = NONE;
+	short source;
+
+	if (!aiming)
+	{
+		vr_seat.shown_valid = FALSE;
+		vr_seat.blinking = FALSE;
+		vr_seat.darkness = 0.0f;
+		vr_seat.anchored = FALSE;
+		vr_seat.frozen = FALSE;
+		return;
+	}
+	if (seated_unit_index != NONE)
+	{
+		struct unit_datum *unit = unit_get(seated_unit_index);
+		short seat_index = unit->unit.parent_seat_index;
+
+		vehicle_index = unit->object.parent_object_index;
+		if (vehicle_index != vr_seat.seat_vehicle_index || seat_index != vr_seat.seat_index)
+		{
+			/* (another seat: what was held belongs to the last) */
+			vr_seat.seat_vehicle_index = vehicle_index;
+			vr_seat.seat_index = seat_index;
+			vr_seat.anchored = FALSE;
+			vr_seat.frozen = FALSE;
+			vr_seat.seat_serial++;
+		}
+		if (!seat_still())
+		{
+			source = _seat_source_head;
+			unit_get_head_position(seated_unit_index, &desired);
+		}
+		else if (!vr_seat.anchored && unit->unit.animation.state == _unit_state_entering_seat)
+		{
+			/* getting in: the eye stays where it was as the body climbs in
+			(not drawn: vr_render_hides_object), with the vehicle */
+			source = _seat_source_getting_in;
+			if (!vr_seat.frozen)
+			{
+				real_point3d from;
+
+				if (vr_seat.shown_valid)
+					shown_position(&from);
+				else
+					from = *position;
+				vehicle_to_local(vehicle_index, &from, &vr_seat.frozen_local);
+				vr_seat.frozen = TRUE;
+			}
+			vehicle_from_local(vehicle_index, &vr_seat.frozen_local, &desired);
+		}
+		else
+		{
+			/* seated, and getting out: the eye stays where the head was
+			once seated, in the vehicle: it rides with the vehicle, but not
+			with the seat's animations or a turret's turning (which swings
+			the seat about the turret's pivot, and the gun about the eye
+			instead) */
+			source = _seat_source_seated;
+			if (vr_seat.anchored)
+				vehicle_from_local(vehicle_index, &vr_seat.anchor_local, &desired);
+			else
+				unit_get_head_position(seated_unit_index, &desired);
+		}
+	}
+	else
+	{
+		vr_seat.seat_vehicle_index = NONE;
+		vr_seat.seat_index = NONE;
+		vr_seat.anchored = FALSE;
+		vr_seat.frozen = FALSE;
+		source = director_get_perspective(0) == _director_perspective_first_person ?
+			_seat_source_first_person : _seat_source_game;
+	}
+
+	/* a blink where the eye would jump: it darkens with the eye held where
+	it was, moves in the dark, and lightens */
+	if (vr_seat.shown_valid && !vr_seat.blinking &&
+		(source != vr_seat.source || vr_seat.seat_serial != vr_seat.shown_serial))
+	{
+		real_point3d from;
+
+		shown_position(&from);
+		if (distance3d(&from, &desired) * METRES_PER_WORLD_UNIT > BLINK_DISTANCE)
+		{
+			vr_seat.blinking = TRUE;
+			vr_seat.blinks++;
+			if (vr_seat.testing)
+			{
+				platform_log("vr seat test: frame %ld: blink %ld, the eye from source %d to %d, %.3f m", vr_seat.frame,
+					vr_seat.blinks, vr_seat.source, source, distance3d(&from, &desired) * METRES_PER_WORLD_UNIT);
+			}
+		}
+	}
+	if (vr_seat.blinking)
+	{
+		vr_seat.darkness += seconds / BLINK_DARKENING_SECONDS;
+		if (vr_seat.darkness < 1.0f)
+		{
+			shown_position(&desired);
+			source = vr_seat.source;
+			vehicle_index = vr_seat.shown_vehicle_index;
+			if (vehicle_index != NONE && !object_try_and_get(vehicle_index))
+				vehicle_index = NONE;
+		}
+		else
+		{
+			vr_seat.darkness = 1.0f;
+			vr_seat.blinking = FALSE;
+		}
+	}
+	else
+	{
+		vr_seat.darkness = MAX(0.0f, vr_seat.darkness - seconds / BLINK_LIGHTENING_SECONDS);
+	}
+	if (!vr_seat.blinking && source == _seat_source_seated && !vr_seat.anchored)
+	{
+		/* (the seat's place, taken as the eye moves there) */
+		vehicle_to_local(vehicle_index, &desired, &vr_seat.anchor_local);
+		vr_seat.anchored = TRUE;
+	}
+
+	*position = desired;
+	vr_seat.shown_valid = TRUE;
+	vr_seat.shown = desired;
+	vr_seat.source = source;
+	if (!vr_seat.blinking)
+		vr_seat.shown_serial = vr_seat.seat_serial;
+	vr_seat.shown_vehicle_index = vehicle_index;
+	if (vehicle_index != NONE)
+		vehicle_to_local(vehicle_index, &desired, &vr_seat.shown_local);
+}
+
+/* the eye pass, after the game's screen flash (render.c): the blink's
+darkness over both eyes, as a black flash (the HUD's layer stays lit) */
+void vr_seat_blink_draw(void)
+{
+	struct render_screen_flash flash = global_window_parameters.screen_flash;
+	real t = vr_seat.darkness;
+
+	if (t <= 0.0f)
+		return;
+	global_window_parameters.screen_flash.type = SCREEN_FLASH_LIGHTEN;
+	global_window_parameters.screen_flash.intensity = t * t * (3.0f - 2.0f * t);
+	global_window_parameters.screen_flash.color.alpha = 1.0f;
+	global_window_parameters.screen_flash.color.red = 0.0f;
+	global_window_parameters.screen_flash.color.green = 0.0f;
+	global_window_parameters.screen_flash.color.blue = 0.0f;
+	rasterizer_screen_flash();
+	global_window_parameters.screen_flash = flash;
+}
+
+/* ---------- the test */
 
 static void vr_seat_read_settings(void)
 {
@@ -98,14 +380,6 @@ static void vr_seat_read_settings(void)
 		platform_log("vr seat test: the \"%s\" seat %.1f s in, for %.1f s", vr_seat.seat_label,
 			vr_seat.enter_seconds, vr_seat.seated_seconds);
 	}
-}
-
-/* the first player's unit, else NONE */
-static long first_player_unit(void)
-{
-	long player_index = local_player_get_player_index(0);
-
-	return player_index == NONE ? NONE : player_get(player_index)->unit_index;
 }
 
 /* the nearest vehicle with a free seat whose label has the test's text in
@@ -172,14 +446,29 @@ static void vr_seat_test_bring(long unit_index)
 		new_index == NONE ? "could not be made" : "made");
 }
 
-/* the first player gets into the nearest such seat, standing at its
-entrance, as the action button does */
+/* two seconds before getting in (before the log starts), the first player
+is put at the nearest such seat's entrance, where they stand to press the
+action button */
+static void vr_seat_test_approach(long unit_index)
+{
+	short seat_index = NONE;
+	long vehicle_index = vr_seat_test_vehicle(unit_index, &seat_index);
+	real_point3d entrance, seat_point;
+
+	if (vehicle_index != NONE &&
+		unit_get_seat_entrance_point(unit_index, vehicle_index, seat_index, &entrance, &seat_point, NULL))
+	{
+		object_set_position(unit_index, &entrance, NULL, NULL);
+	}
+}
+
+/* the first player gets into the nearest such seat, as the action button
+does */
 static void vr_seat_test_enter(long unit_index)
 {
 	short seat_index = NONE;
 	long vehicle_index = vr_seat_test_vehicle(unit_index, &seat_index);
 	struct unit_seat *seat;
-	real_point3d entrance, seat_point;
 
 	if (vehicle_index == NONE)
 	{
@@ -188,8 +477,6 @@ static void vr_seat_test_enter(long unit_index)
 	}
 	seat = TAG_BLOCK_GET_ELEMENT(&unit_definition_get(object_get(vehicle_index)->definition_index)->unit.seats,
 		seat_index, struct unit_seat);
-	if (unit_get_seat_entrance_point(unit_index, vehicle_index, seat_index, &entrance, &seat_point, NULL))
-		object_set_position(unit_index, &entrance, NULL, NULL);
 	if (unit_enter_seat(unit_index, vehicle_index, seat_index))
 	{
 		platform_log("vr seat test: frame %ld: into %s's seat %d (%s)", vr_seat.frame,
@@ -219,6 +506,11 @@ void vr_seat_test_update(void)
 	{
 		vr_seat.brought = TRUE;
 		vr_seat_test_bring(unit_index);
+	}
+	if (!vr_seat.approached && time >= (long)((vr_seat.enter_seconds - 2.0f) * TICKS_PER_SECOND))
+	{
+		vr_seat.approached = TRUE;
+		vr_seat_test_approach(unit_index);
 	}
 	if (!vr_seat.entered && time >= (long)(vr_seat.enter_seconds * TICKS_PER_SECOND))
 	{
@@ -263,9 +555,11 @@ static void vr_seat_log_phase_end(void)
 {
 	if (vr_seat.phase_frames == 0)
 		return;
-	platform_log("vr seat log: %s: %ld frames, moved %.3f m (at most %.1f mm a frame), turned %.1f degrees "
-		"(at most %.2f a frame)", seat_phase_names[vr_seat.phase], vr_seat.phase_frames, vr_seat.phase_distance,
-		vr_seat.phase_largest_move * 1000.0f, vr_seat.phase_turn, vr_seat.phase_largest_turn);
+	platform_log("vr seat log: %s: %ld frames, moved %.3f m (at most %.1f mm a frame), %.3f m of it seen (at most "
+		"%.1f mm a frame), turned %.1f degrees (at most %.2f a frame); %ld blinks so far",
+		seat_phase_names[vr_seat.phase], vr_seat.phase_frames, vr_seat.phase_distance,
+		vr_seat.phase_largest_move * 1000.0f, vr_seat.phase_seen_distance, vr_seat.phase_largest_seen_move * 1000.0f,
+		vr_seat.phase_turn, vr_seat.phase_largest_turn, vr_seat.blinks);
 }
 
 /* each VR frame's centre camera (vr_render.c): logs its motion while the
@@ -300,21 +594,29 @@ void vr_seat_log_camera(real_point3d const *position, real_vector3d const *forwa
 			vr_seat.phase_turn = 0.0f;
 			vr_seat.phase_largest_move = 0.0f;
 			vr_seat.phase_largest_turn = 0.0f;
+			vr_seat.phase_seen_distance = 0.0f;
+			vr_seat.phase_largest_seen_move = 0.0f;
 		}
 		vr_seat.phase_frames++;
 		vr_seat.phase_distance += move;
 		vr_seat.phase_turn += turn;
 		vr_seat.phase_largest_move = MAX(vr_seat.phase_largest_move, move);
 		vr_seat.phase_largest_turn = MAX(vr_seat.phase_largest_turn, turn);
+		if (vr_seat.darkness < 1.0f)
+		{
+			/* (seen: not in a blink's full darkness) */
+			vr_seat.phase_seen_distance += move;
+			vr_seat.phase_largest_seen_move = MAX(vr_seat.phase_largest_seen_move, move);
+		}
 		/* (and the eye in the vehicle's frame, its root node's: whether the
 		seat swings about the vehicle) */
 		local.x = local.y = local.z = 0.0f;
 		if (parent_index != NONE)
 			matrix4x3_inverse_transform_point(object_get_node_matrix(parent_index, 0), position, &local);
-		platform_log("vr seat log: frame %ld %s: moved %.1f mm, turned %.2f degrees; pitch %.1f; "
-			"in the vehicle %.3f %.3f %.3f m", vr_seat.frame, seat_phase_names[phase], move * 1000.0f, turn,
-			(real)asin(forward->k > 1.0f ? 1.0f : forward->k < -1.0f ? -1.0f : forward->k) * DEGREES_PER_RADIAN,
-			local.x * METRES_PER_WORLD_UNIT, local.y * METRES_PER_WORLD_UNIT, local.z * METRES_PER_WORLD_UNIT);
+		platform_log("vr seat log: frame %ld %s: moved %.1f mm, turned %.2f degrees; pitch %.1f; dark %.2f; "
+			"height %.3f m; in the vehicle %.3f %.3f %.3f m", vr_seat.frame, seat_phase_names[phase], move * 1000.0f,
+			turn, (real)asin(forward->k > 1.0f ? 1.0f : forward->k < -1.0f ? -1.0f : forward->k) * DEGREES_PER_RADIAN,
+			vr_seat.darkness, position->z * METRES_PER_WORLD_UNIT, local.x * METRES_PER_WORLD_UNIT, local.y * METRES_PER_WORLD_UNIT, local.z * METRES_PER_WORLD_UNIT);
 	}
 	vr_seat.phase = phase;
 	vr_seat.last_valid = TRUE;
