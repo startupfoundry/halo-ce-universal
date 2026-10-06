@@ -865,8 +865,8 @@ In the headset, Settings' VR Setup (below About; only there while the
 game plays in VR) sets most of these with the left d-pad: VR Controls
 (the hands, the aim, the gamepad's view, two-handed aiming, the melee
 punch, turning and the vehicles' view) and, from its last row, VR Display (the play position,
-the eye height, the world's scale, the HUD's and the menus' distance and
-size, the resolution and the refresh rate). OK writes them to
+the eye height, the world's scale, the HUD (on the visor or flat), the HUD's
+and the menus' distance and size, the resolution and the refresh rate). OK writes them to
 `config.toml`, and they apply at once, but those marked RESTART:
 `vr.height`, `vr.resolution_scale` and `vr.refresh_rate`, which the
 headset's session is opened with, apply from the next start.
@@ -891,7 +891,12 @@ headset's session is opened with, apply from the next start.
 | `vr.height` | `"seated"` | `HALO_VR_HEIGHT` | `"seated"`: the head where it is at the recentring is the player's eye. `"standing"`: the head `vr.player_height` above the floor is. |
 | `vr.player_height` | `1.65` | `HALO_VR_PLAYER_HEIGHT` | Standing, the height of your eyes, in metres. |
 | `vr.world_scale` | `1.0` | `HALO_VR_WORLD_SCALE` | More than `1` makes the world look larger. |
-| `vr.hud_distance`, `vr.hud_size` | `2.0`, `60.0` | `HALO_VR_HUD_DISTANCE`, `HALO_VR_HUD_SIZE` | The HUD's distance in front of the eyes (metres) and width (degrees of the view). |
+| `vr.hud` | `"visor"` | `HALO_VR_HUD` | `"visor"`: the HUD on the helmet's visor (below, "The HUD on the visor"). `"flat"`: a flat screen in front of the eyes. |
+| `vr.hud_distance`, `vr.hud_size` | `2.0`, `60.0` | `HALO_VR_HUD_DISTANCE`, `HALO_VR_HUD_SIZE` | The HUD's distance in front of the eyes (metres) and width (degrees of the view). On the visor, the radius of its curve and the angle that it spans. |
+| `vr.hud_lag` | `0.03` | `HALO_VR_HUD_LAG` | With `vr.hud = "visor"`: how far the HUD trails the head's turns, as the time constant of its smoothing in seconds (up to `0.2`), never more than 1.5 degrees behind. `0`: the HUD turns with the head exactly. |
+| `vr.hud_glow` | `0.5` | `HALO_VR_HUD_GLOW` | With `vr.hud = "visor"`: the HUD's glow on the glass, from `0` (none) to `1`. |
+| `vr.visor_frame` | `0.6` | `HALO_VR_VISOR_FRAME` | With `vr.hud = "visor"`: the helmet about the visor, the edges of the view darkened and the glass faintly gold, from `0` (none) to `1`. |
+| `vr.visor_effects` | `true` | `HALO_VR_VISOR_EFFECTS` | With `vr.hud = "visor"`: the shields on the visor. Its rim flares as they are hit, pulses red while they are low or gone (or while the health is low without them), and glows as they recharge, the glow rising up the rim as they fill. The HUD flickers as they break, and comes up as you take control. |
 | `vr.menu_distance`, `vr.menu_width` | `2.5`, `2.6` | `HALO_VR_MENU_DISTANCE`, `HALO_VR_MENU_WIDTH` | The menus' distance and width, in metres. |
 | `debug.vr_force_render` | `false` | `HALO_VR_FORCE_RENDER` | Draw the frames while the runtime says not to (the headset not worn), to measure them. |
 | `debug.vr_test_turn` | `0.0` | `HALO_VR_TEST_TURN` | Turn the player this many degrees a second, for automated tests without hands. |
@@ -906,8 +911,9 @@ throws a grenade, holds Back (recentring) and walks, a few seconds each in
 turn, and logs each.
 
 `debug.gpu_stats` also logs the VR frames' timing, and
-`debug.screenshot_every` writes both eyes (`eyes*.bmp`) and the HUD
-(`hud*.bmp`).
+`debug.screenshot_every` writes both eyes (`eyes*.bmp`), the HUD
+(`hud*.bmp`) and both eyes with the layers over them, as the headset shows
+them (`view*.bmp`).
 
 The GPU's time is best read from the kernel: the process's
 `drm-engine-gpu` time in `/proc/<pid>/fdinfo`. On the Steam Frame (b30's
@@ -947,10 +953,36 @@ supersampling costs as above, and multisampling the eye pass
   side over its near hull.) The screen's other render targets have a
   layer for each eye. Draws in screen space are the same in both eyes.
 - The HUD and the menus are drawn into a target of their own, which is
-  copied each frame into a quad layer: in front of the head in a game, in
+  copied each frame into a layer: in front of the head in a game, in
   front of the place of the last recentring in the menus. The HUD's camera
   has the field of view of the layer, so the waypoints are in the correct
-  place. With `vr.aim = "controller"` or `"gamepad"` the reticle is not in
+  place.
+- The HUD on the visor (`vr.hud = "visor"`, `src/vr_visor.c`) is curved
+  about the eyes: the game's 640x480 HUD is laid out in angles, across
+  and up, so that each element is as large and as square at the edges as
+  in the middle, and all of it at one distance. Where the runtime has
+  cylinder layers (`XR_KHR_composition_layer_cylinder`, as Monado does) it
+  is on a cylinder about the head; else (SteamVR 2.18 on the Steam Frame)
+  on a quad whose image the copy draws curved, which from the eyes looks
+  the same, its edges only a little farther (the log says which).
+  `HALO_VR_NO_CYLINDER=1` does without cylinders, to test that. What the
+  HUD projects from the world (the waypoints, the names, the reticle where
+  the head aims) goes through the same curve
+  (`vr_render_hud_to_screen`). The HUD's orientation trails the head's
+  (`vr.hud_lag`): smoothed toward it, without a spring, so that it never
+  overshoots and is still while the head is, and held within 1.5 degrees;
+  its camera looks where the layer does, so the waypoints stay on what they
+  mark, and the reticle where the head aims. The visor is a layer of its
+  own, under the HUD's, on the head exactly (the helmet does not lag): the
+  edges of the eyes' fields of view darkened, the glass a faint gold, and
+  the shields' glows about its rim, from the player's unit as the game has
+  it (its shields, their recharging, its health). The glows stay out past
+  the HUD, toward the edges of the view; the HUD's flicker as the shields
+  break is three dips in under half a second. The copy adds the HUD's
+  glow, a soft ring of its own light about each element.
+  `debug.screenshot_every` also writes what the headset shows
+  (`view*.bmp`): the layers drawn over each eye's image as the compositor
+  would place them. With `vr.aim = "controller"` or `"gamepad"` the reticle is not in
   the layer but in the eyes (`vr_render_crosshairs`): drawn at the end of
   the eye pass where the aim meets the world (a line-of-sight test, its
   distance smoothed), in each eye by a scale and offset from the middle of
