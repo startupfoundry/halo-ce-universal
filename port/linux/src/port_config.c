@@ -204,6 +204,12 @@ static const struct config_setting config_settings[] =
 		"the Steam Frame cannot take it yet)." },
 	{ "vr.melee_gesture", _config_boolean, "true", "HALO_VR_MELEE_GESTURE", _environment_value, _platform_desktop,
 		"A punch with the right controller (fast, where it points) melees, as B does." },
+	{ "vr.grenade_throw", _config_string, "\"gesture\"", "HALO_VR_GRENADE_THROW", _environment_value,
+		_platform_desktop,
+		"With vr.aim = \"controller\", how a grenade is thrown: \"gesture\" by\n"
+		"throwing it with the left hand (hold the left grip, draw the hand back,\n"
+		"swing and let go: it flies where the hand threw it, as hard as it did)\n"
+		"or with the left trigger; \"button\" with the left trigger alone." },
 	{ "vr.two_handed", _config_boolean, "true", "HALO_VR_TWO_HANDED", _environment_value, _platform_desktop,
 		"With vr.aim = \"controller\", a long gun (not a pistol or the needler)\n"
 		"is aimed with both hands while the left grip holds it by the foregrip:\n"
@@ -518,6 +524,10 @@ static const struct config_setting config_settings[] =
 		"and the frames the hands take to move to it from the pose before (0:\n"
 		"none; a swing); poses separated by ';' (16 at most) in turn.\n"
 		"Empty: the controllers' own." },
+	{ "debug.vr_throw_log", _config_boolean, "false", "HALO_VR_THROW_LOG", _environment_value, _platform_desktop,
+		"Log each step of a grenade thrown with the left hand (vr.grenade_throw):\n"
+		"the grip taken, the swing (or why not), the release's speed and\n"
+		"direction, and the game's throw timed to it." },
 #endif
 	{ "debug.null_renderer", _config_boolean, "false", "HALO_NULL_RENDERER", _environment_set_is_true, _platform_all,
 		"Run without a window, drawing nothing." },

@@ -760,6 +760,21 @@ static void handle_one_player_input(
 					unit->object.parent_object_index == NONE && vr_render_long_gun(current_weapon_index),
 					&vr_yaw, &vr_pitch);
 			}
+			/* (a grenade thrown with the left hand: whether the game would
+			throw one, and while the hand throws, the facing along the throw,
+			so that the netcode's copies of it go the same way:
+			port/linux/game/vr_grenade.c) */
+			if (local_player_index == 0)
+			{
+				extern boolean vr_grenade_facing(long unit_index, boolean aiming, real *yaw, real *pitch);
+				real throw_yaw, throw_pitch;
+
+				if (vr_grenade_facing(player->unit_index, vr_aim == 1, &throw_yaw, &throw_pitch))
+				{
+					vr_yaw = throw_yaw;
+					vr_pitch = throw_pitch;
+				}
+			}
 			if (vr_aim == 1)
 			{
 				while (vr_yaw < 0.f)
