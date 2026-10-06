@@ -574,13 +574,14 @@ static const struct config_setting config_settings[] =
 	{ "debug.vr_test_hands", _config_string, "\"\"", "HALO_VR_TEST_HANDS", _environment_value, _platform_desktop,
 		"Hold the VR controllers still, for automated tests without hands:\n"
 		"\"lx ly lz lyaw lpitch lroll, rx ry rz ryaw rpitch rroll[, grip[, buttons\n"
-		"[, trigger[, head]]]]\", the left and right hands in metres right, up and\n"
-		"forward from the recentred head and degrees of yaw (left), pitch (up)\n"
-		"and roll (right), the left grip's pull (0 to 1), the buttons pressed\n"
-		"for the pose's first 20 frames (A 1, B 2, X 4, Y 8, the right trigger\n"
-		"65536, the left 131072), the right trigger's pull (0 to 1) and the\n"
-		"head turned (degrees left); poses separated by ';' are held 288 frames\n"
-		"each in turn.\n"
+		"[, trigger[, head[, frames[, move]]]]]]\", the left and right hands in\n"
+		"metres right, up and forward from the recentred head and degrees of yaw\n"
+		"(left), pitch (up) and roll (right), the left grip's pull (0 to 1), the\n"
+		"buttons pressed for the pose's first 20 frames (A 1, B 2, X 4, Y 8, the\n"
+		"right trigger 65536, the left 131072), the right trigger's pull (0 to\n"
+		"1), the head turned (degrees left), the frames the pose lasts (0: 288)\n"
+		"and the frames the hands take to move to it from the pose before (0:\n"
+		"none; a swing); poses separated by ';' (16 at most) in turn.\n"
 		"Empty: the controllers' own." },
 #endif
 	{ "debug.null_renderer", _config_boolean, "false", "HALO_NULL_RENDERER", _environment_set_is_true, _platform_all,

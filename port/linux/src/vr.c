@@ -61,8 +61,8 @@ between the hands, smoothed over this time constant (seconds) */
 #define TWO_HANDED_SMOOTHING 0.05f
 #define TWO_HANDED_BLEND 0.15f
 /* debug.vr_test_hands: the poses it gives the controllers, each held this
-many frames */
-#define TEST_HANDS_POSES 8
+many frames unless it says */
+#define TEST_HANDS_POSES 16
 #define TEST_HANDS_FRAMES 288
 /* and its buttons (vr_host.h's VR_BUTTON_*, with the triggers as these)
 pressed for the first frames of the pose */
@@ -174,17 +174,21 @@ static struct
 	/* debug.vr_test_hands: each pose's left and right hands (metres right,
 	up, forward from the recentred head; degrees of yaw left, pitch up, roll
 	right), the left grip's pull, the buttons pressed, the right trigger's
-	pull and the head's turn (degrees left) */
+	pull, the head's turn (degrees left), the frames it lasts and the frames
+	the hands take to move to it from the pose before; the poses' frames in
+	all */
 	int test_hand_poses;
-	float test_hands[TEST_HANDS_POSES][16];
+	float test_hands[TEST_HANDS_POSES][18];
+	unsigned long test_hands_frames;
 } settings = { (unsigned long)-1 };
 
 /* debug.vr_test_hands: "lx ly lz lyaw lpitch lroll, rx ry rz ryaw rpitch
-rroll[, grip[, buttons[, trigger[, head yaw]]]]", poses separated by ';',
-each held TEST_HANDS_FRAMES frames */
+rroll[, grip[, buttons[, trigger[, head yaw[, frames[, move frames]]]]]]",
+poses separated by ';', each lasting its frames (TEST_HANDS_FRAMES if 0) */
 static void test_hands_read(const char *text)
 {
 	settings.test_hand_poses = 0;
+	settings.test_hands_frames = 0;
 	while (text && *text && settings.test_hand_poses < TEST_HANDS_POSES)
 	{
 		float *pose = settings.test_hands[settings.test_hand_poses];
@@ -203,12 +207,17 @@ static void test_hands_read(const char *text)
 			if (*c == ',')
 				*c = ' ';
 		}
-		pose[12] = pose[13] = pose[14] = pose[15] = 0.0f;
-		count = sscanf(numbers, "%f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f", &pose[0], &pose[1], &pose[2],
-			&pose[3], &pose[4], &pose[5], &pose[6], &pose[7], &pose[8], &pose[9], &pose[10], &pose[11], &pose[12],
-			&pose[13], &pose[14], &pose[15]);
+		pose[12] = pose[13] = pose[14] = pose[15] = pose[16] = pose[17] = 0.0f;
+		count = sscanf(numbers, "%f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f", &pose[0], &pose[1],
+			&pose[2], &pose[3], &pose[4], &pose[5], &pose[6], &pose[7], &pose[8], &pose[9], &pose[10], &pose[11],
+			&pose[12], &pose[13], &pose[14], &pose[15], &pose[16], &pose[17]);
 		if (count >= 12)
+		{
+			if (pose[16] < 1.0f)
+				pose[16] = (float)TEST_HANDS_FRAMES;
+			settings.test_hands_frames += (unsigned long)pose[16];
 			settings.test_hand_poses++;
+		}
 		text = end ? end + 1 : NULL;
 	}
 }
@@ -727,21 +736,41 @@ hands: a simulated headset has none) */
 static void test_hands_apply(void)
 {
 	static int last_index = -1;
-	const float *pose;
+	const float *pose, *before;
+	float moved[12];
+	unsigned long frame;
 	int hand, index;
 
-	if (!settings.test_hand_poses || !vr.origin_valid)
+	if (!settings.test_hand_poses || !vr.origin_valid || !settings.test_hands_frames)
 		return;
-	index = (int)(vr.presents / TEST_HANDS_FRAMES % (unsigned long)settings.test_hand_poses);
+	/* (the pose this frame is in, and how far into it) */
+	frame = vr.presents % settings.test_hands_frames;
+	for (index = 0; index < settings.test_hand_poses - 1 && frame >= (unsigned long)settings.test_hands[index][16];
+		index++)
+	{
+		frame -= (unsigned long)settings.test_hands[index][16];
+	}
 	if (index != last_index)
 	{
 		platform_log("vr: test hands: pose %d from frame %lu", index, vr.presents);
 		last_index = index;
 	}
 	pose = settings.test_hands[index];
+	/* a pose with move frames: the hands from the pose before to it over
+	them, a step a frame (a swing, at the speed the steps make) */
+	before = settings.test_hands[index ? index - 1 : settings.test_hand_poses - 1];
+	memcpy(moved, pose, sizeof(moved));
+	if (pose[17] >= 1.0f && (float)frame < pose[17])
+	{
+		float t = (float)(frame + 1) / pose[17];
+		int part;
+
+		for (part = 0; part < 12; part++)
+			moved[part] = before[part] + (pose[part] - before[part]) * t;
+	}
 	for (hand = 0; hand < 2; hand++)
 	{
-		const float *p = pose + hand * 6;
+		const float *p = moved + hand * 6;
 		float radians = (float)M_PI / 180.0f;
 		float local[3] = { p[0], p[1], -p[2] };
 		float yaw[4] = { 0.0f, sinf((vr.origin_yaw + p[3] * radians) * 0.5f), 0.0f,
@@ -787,7 +816,7 @@ static void test_hands_apply(void)
 			quaternion_multiply(turn, poses[which]->orientation, poses[which]->orientation);
 		}
 	}
-	if (vr.presents % TEST_HANDS_FRAMES < TEST_HANDS_PRESS_FRAMES)
+	if (frame < TEST_HANDS_PRESS_FRAMES)
 	{
 		unsigned int buttons = (unsigned int)pose[13];
 
