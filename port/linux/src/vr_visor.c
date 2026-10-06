@@ -46,16 +46,19 @@ lag: it is the helmet, and turns with the head exactly.
 The visor's glass (vr.visor_frame, a layer just within the rim, over the
 HUD's): the edges of the view darkened, and the glass a faint gold (no line
 where the visor ends: a line fixed in the view reads as a smudge on the
-lenses). And the shields on it (vr.visor_effects), from the player's unit
-as the game has it (halo_vr_visor_state): their energy across the glass,
-the game's own (the unit's modifier shader, the plasma the armour glows
-with as the shields are hit: its colours, its noise maps and their motion),
-as bright as the armour's, and as they recharge, rising across the glass to
-their level, flashing as they are full; the glass's rim pulses red while
-they are low or gone, and the HUD flickers as they break and comes up as
-the player takes control. More at the glass's edges than its middle, so
-that nothing is hidden. Other effects on the glass (water, dirt, cracks,
-reflections) would be drawn with it (d3d8_gl.c, vr_draw_visor).
+lenses, or a scratch across it). Its quad reaches past every corner of both
+eyes' views, as the runtime gives them, and fades to nothing beyond them
+(visor_extent): its edges are never seen. And the shields on it
+(vr.visor_effects), from the player's unit as the game has it
+(halo_vr_visor_state): their energy across the glass, the game's own (the
+unit's modifier shader, the plasma the armour glows with as the shields are
+hit: its colours, its noise maps and their motion), as bright as the
+armour's, and as they recharge, rising across the glass to their level,
+flashing as they are full; the glass's rim pulses red while they are low or
+gone, and the HUD flickers as they break and comes up as the player takes
+control. More at the glass's edges than its middle, so that nothing is
+hidden. Other effects on the glass (water, dirt, cracks, reflections) would
+be drawn with it (d3d8_gl.c, vr_draw_visor).
 */
 
 #ifdef HALO_VR
@@ -70,9 +73,11 @@ reflections) would be drawn with it (d3d8_gl.c, vr_draw_visor).
 
 /* the HUD's turn behind the head's (vr.hud_lag), at most (radians) */
 #define FOLLOW_LIMIT (1.5f * (float)M_PI / 180.0f)
-/* the visor's image, as wide as the eyes see of the glass, and this much
-more (tangents) */
-#define VISOR_MARGIN 0.04f
+/* the visor's image: past all that the eyes see of the glass by a band in
+which it fades out, this much of the tangent it is from the head's forward
+and this much more (tangents at the glass's distance) */
+#define VISOR_FADE 0.12f
+#define VISOR_FADE_BASE 0.10f
 /* the HUD's image's pixels across (vr.c's), for the panels' */
 #define HUD_PIXELS_ACROSS 1280.0f
 /* the panels' distances: never nearer (metres) */
@@ -137,6 +142,7 @@ static struct
 	int cylinder;
 	int logged;
 	int rim_logged;
+	int extent_logged;
 	int menus;
 	/* the frame's head and eyes' fields of view, its seconds, and the HUD's
 	distance and half angles (radians) */
@@ -345,67 +351,145 @@ int vr_visor_orientation(float orientation[4])
 	return settings.lag > 0.0f;
 }
 
+/* how far a plane before the head reaches, for what the eyes see of it: a
+tangent from the middle of the head (about 80 degrees: a plane's tangents
+grow without bound toward 90) */
+#define PLANE_TANGENT_LIMIT 6.0f
+
+/* where an eye's direction (tangents in its view: x right, y up) meets a
+plane before the head (distance metres along its -z), in tangents from the
+middle of the head; a direction along the plane or away from it, or past
+PLANE_TANGENT_LIMIT, as far as the plane goes its way, and 0 returned */
+static int plane_point(int eye, float x, float y, float distance, float point[2])
+{
+	float origin[3] = { eye ? 0.032f : -0.032f, 0.0f, 0.0f }, local[3], direction[3], t, across;
+
+	local[0] = x;
+	local[1] = y;
+	local[2] = -1.0f;
+	/* (unknown, the eyes beside the middle of the head, as they nearly
+	are) */
+	memcpy(direction, local, sizeof(direction));
+	if (visor.eyes_known)
+	{
+		memcpy(origin, visor.eye_position[eye], sizeof(origin));
+		quaternion_rotate(visor.eye_orientation[eye], local, direction);
+	}
+	t = direction[2] < -1e-6f ? (-distance - origin[2]) / direction[2] : -1.0f;
+	if (t > 0.0f)
+	{
+		point[0] = (origin[0] + direction[0] * t) / distance;
+		point[1] = (origin[1] + direction[1] * t) / distance;
+		if (fabsf(point[0]) < PLANE_TANGENT_LIMIT && fabsf(point[1]) < PLANE_TANGENT_LIMIT)
+			return 1;
+	}
+	across = fabsf(direction[0]) > fabsf(direction[1]) ? fabsf(direction[0]) : fabsf(direction[1]);
+	point[0] = across > 0.0f ? direction[0] / across * PLANE_TANGENT_LIMIT : 0.0f;
+	point[1] = across > 0.0f ? direction[1] / across * PLANE_TANGENT_LIMIT : 0.0f;
+	return 0;
+}
+
 /* what the eyes see of a plane before the head (distance metres along its
 -z): the edges of their views on it together (metres in the head's frame:
-left, right, up, down). Near the eyes, each side is one eye's: the left
-eye's left edge, the right eye's right. */
+left, right, up, down), along the middles of the edges, where the views
+reach. Near the eyes, each side is one eye's: the left eye's left edge, the
+right eye's right. */
 static void footprint(float distance, float edges[4])
 {
 	int eye, edge;
 
-	if (!visor.eyes_known)
-	{
-		/* (the eyes beside the middle of the head, as they nearly are) */
-		edges[0] = (visor.fov[0][0] < visor.fov[1][0] ? visor.fov[0][0] : visor.fov[1][0]) * distance - 0.032f;
-		edges[1] = (visor.fov[0][1] > visor.fov[1][1] ? visor.fov[0][1] : visor.fov[1][1]) * distance + 0.032f;
-		edges[2] = (visor.fov[0][2] > visor.fov[1][2] ? visor.fov[0][2] : visor.fov[1][2]) * distance;
-		edges[3] = (visor.fov[0][3] < visor.fov[1][3] ? visor.fov[0][3] : visor.fov[1][3]) * distance;
-		return;
-	}
-	edges[0] = edges[3] = 1e9f;
-	edges[1] = edges[2] = -1e9f;
+	edges[0] = edges[1] = edges[2] = edges[3] = 0.0f;
 	for (eye = 0; eye < 2; eye++)
 	{
 		for (edge = 0; edge < 4; edge++)
 		{
-			const float *origin = visor.eye_position[eye];
-			float local[3], direction[3], t, x, y;
+			float point[2];
 
-			/* the middle of each edge of the eye's view */
-			local[0] = edge < 2 ? visor.fov[eye][edge] : 0.0f;
-			local[1] = edge >= 2 ? visor.fov[eye][edge] : 0.0f;
-			local[2] = -1.0f;
-			quaternion_rotate(visor.eye_orientation[eye], local, direction);
-			if (direction[2] > -1e-4f)
-				continue;
-			t = (-distance - origin[2]) / direction[2];
-			x = origin[0] + direction[0] * t;
-			y = origin[1] + direction[1] * t;
-			if (edge == 0 && x < edges[0])
-				edges[0] = x;
-			if (edge == 1 && x > edges[1])
-				edges[1] = x;
-			if (edge == 2 && y > edges[2])
-				edges[2] = y;
-			if (edge == 3 && y < edges[3])
-				edges[3] = y;
+			plane_point(eye, edge < 2 ? visor.fov[eye][edge] : 0.0f, edge >= 2 ? visor.fov[eye][edge] : 0.0f,
+				distance, point);
+			if (edge == 0 && point[0] * distance < edges[0])
+				edges[0] = point[0] * distance;
+			if (edge == 1 && point[0] * distance > edges[1])
+				edges[1] = point[0] * distance;
+			if (edge == 2 && point[1] * distance > edges[2])
+				edges[2] = point[1] * distance;
+			if (edge == 3 && point[1] * distance < edges[3])
+				edges[3] = point[1] * distance;
 		}
 	}
 }
 
-/* what the eyes see of the glass, and the visor's image's edges about it
-(tangents at the glass's distance: left, right, up, down) */
-static void visor_extent(float fov[4], float extent[4])
+/* all that the eyes see on a plane before the head (distance metres along
+its -z), whatever their views' shapes and turns: the bounds of where the
+corners of each eye's view meet it (the views are pyramids, so what each
+sees of a plane is the polygon of its corners), in tangents from the middle
+of the head (left, right, up, down); 0 if a corner is past where the plane
+reaches (plane_point) */
+static int view_bounds(float distance, float bounds[4])
 {
-	int edge;
+	static const int corners[4][2] = { { 0, 2 }, { 1, 2 }, { 0, 3 }, { 1, 3 } };
+	int eye, corner, whole = 1;
+
+	bounds[0] = bounds[1] = bounds[2] = bounds[3] = 0.0f;
+	for (eye = 0; eye < 2; eye++)
+	{
+		for (corner = 0; corner < 4; corner++)
+		{
+			float point[2];
+
+			if (!plane_point(eye, visor.fov[eye][corners[corner][0]], visor.fov[eye][corners[corner][1]], distance,
+				point))
+				whole = 0;
+			if (point[0] < bounds[0])
+				bounds[0] = point[0];
+			if (point[0] > bounds[1])
+				bounds[1] = point[0];
+			if (point[1] > bounds[2])
+				bounds[2] = point[1];
+			if (point[1] < bounds[3])
+				bounds[3] = point[1];
+		}
+	}
+	return whole;
+}
+
+/* what the eyes see of the glass, and the visor's image's edges about it
+and where it fades out (tangents at the glass's distance from the middle of
+the head: left, right, up, down). Its edges must never be seen, at any
+setting, on any headset: the image reaches past all that the eyes see
+(view_bounds, every corner of both eyes' views) by a band in which it fades
+to nothing, so that even a view a little wider than the runtime says (or
+one past where the plane can reach: then the band is within the view, and
+the glass fades out softly before its edge) shows no edge. */
+static void visor_extent(float fov[4], float extent[4], float clear[4])
+{
+	int edge, whole;
 
 	footprint(VR_GLASS_DISTANCE, fov);
 	for (edge = 0; edge < 4; edge++)
 		fov[edge] /= VR_GLASS_DISTANCE;
-	extent[0] = fov[0] * 1.04f - VISOR_MARGIN;
-	extent[1] = fov[1] * 1.04f + VISOR_MARGIN;
-	extent[2] = fov[2] * 1.04f + VISOR_MARGIN;
-	extent[3] = fov[3] * 1.04f - VISOR_MARGIN;
+	whole = view_bounds(VR_GLASS_DISTANCE, clear);
+	for (edge = 0; edge < 4; edge++)
+	{
+		float side = edge == 0 || edge == 3 ? -1.0f : 1.0f;
+		float seen = fabsf(clear[edge]);
+		float band = VISOR_FADE_BASE + VISOR_FADE * seen;
+
+		if (seen + band > PLANE_TANGENT_LIMIT)
+		{
+			/* (the band within the plane's reach, the fade before its edge) */
+			seen = PLANE_TANGENT_LIMIT - band;
+			whole = 0;
+		}
+		clear[edge] = side * seen;
+		extent[edge] = side * (seen + band);
+	}
+	if (!whole && !visor.extent_logged)
+	{
+		platform_log("vr: visor: the eyes' views reach past %.0f degrees from the head's forward; the glass fades out "
+			"before its edges within them", atanf(PLANE_TANGENT_LIMIT) * 180.0f / (float)M_PI);
+		visor.extent_logged = 1;
+	}
 }
 
 /* ---------- the HUD's panels */
@@ -659,9 +743,9 @@ void vr_visor_layers(struct vr_host_layers *layers, int visor_drawn)
 	layers->visor = visor_drawn;
 	if (visor_drawn)
 	{
-		float fov[4], extent[4];
+		float fov[4], extent[4], clear[4];
 
-		visor_extent(fov, extent);
+		visor_extent(fov, extent, clear);
 		memset(&layers->visor_pose, 0, sizeof(layers->visor_pose));
 		layers->visor_pose.orientation[3] = 1.0f;
 		layers->visor_pose.position[0] = (extent[0] + extent[1]) * 0.5f * VR_GLASS_DISTANCE;
@@ -816,7 +900,7 @@ void vr_visor_image(struct vr_visor_image *image)
 	memset(image, 0, sizeof(*image));
 	if (!settings.visor || visor.menus || visor.presence < 0.01f)
 		return;
-	visor_extent(image->fov, image->extent);
+	visor_extent(image->fov, image->extent, image->clear);
 	image->frame = settings.frame * visor.presence;
 	effects = settings.effects ? visor.presence : 0.0f;
 	/* the warning's pulse: a sine, never off while it lasts; it gives way

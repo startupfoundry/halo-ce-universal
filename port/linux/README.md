@@ -1245,7 +1245,13 @@ supersampling costs as above, and multisampling the eye pass
   The visor's glass is a layer of its own 0.105 m before the head, over
   the HUD's, on the head exactly (the helmet does not lag): the helmet's
   shadow on it from the brow and the chin, the glass a faint gold, and
-  the shields on it, from the player's unit as the game has it. Their
+  the shields on it, from the player's unit as the game has it. Its
+  edges are never seen: its quad reaches past every corner of both eyes'
+  views as the runtime gives them (`xrLocateViews`: their fields of view
+  and their turns, on any headset), and all of it fades to nothing in a
+  band beyond them before its edges (a view past 80 degrees from the
+  head's forward, which no quad this near can reach, sees the fade, never
+  an edge). Their
   energy is the armour's own: the unit's modifier shader (the Chief's
   `characters\cyborg\shaders\shield hit`, a plasma), its two noise maps
   (`characters\elite\bitmaps\plasma shield noise`) moving through the
@@ -1265,8 +1271,9 @@ supersampling costs as above, and multisampling the eye pass
   faceplate is: the visor's opening, wide and low, its lip just in from the
   edges of each eye's own view, its bevel and frame curving back toward the
   face, only its brow and chin to see (the sides barely, the corners not at
-  all), the lip catching the light; each eye sees its own side, both the
-  brow and the chin, in depth. It is sized by the runtime's fields of view,
+  all), fading in smoothly from its lip and out again beyond the view,
+  with no highlight along it (no line, no edge); each eye sees its own
+  side, both the brow and the chin, in depth. It is sized by the runtime's fields of view,
   so it stays at their edges on any headset. Other effects on the glass
   (water, dirt, cracks, reflections) would be drawn with it
   (`vr_draw_visor`). The copy adds the HUD's glow, a soft ring of its own
