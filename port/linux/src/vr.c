@@ -229,6 +229,10 @@ static struct
 	int test_head;
 	float test_head_yaw;
 	float test_head_period;
+	/* debug.vr_test_fov: each eye's field of view (degrees: outward, inward,
+	up, down) and its turn outward (degrees), instead of the runtime's */
+	int test_fov;
+	float test_fov_angles[5];
 	int two_handed;
 	int floating_hands;
 	int arms;
@@ -319,6 +323,10 @@ static void settings_read(void)
 	settings.test_head_period = 0.0f;
 	settings.test_head = sscanf(config_string("debug.vr_test_head"), "%f %f", &settings.test_head_yaw,
 		&settings.test_head_period) >= 1;
+	settings.test_fov_angles[4] = 0.0f;
+	settings.test_fov = sscanf(config_string("debug.vr_test_fov"), "%f %f %f %f %f", &settings.test_fov_angles[0],
+		&settings.test_fov_angles[1], &settings.test_fov_angles[2], &settings.test_fov_angles[3],
+		&settings.test_fov_angles[4]) >= 4;
 	settings.two_handed = config_boolean("vr.two_handed");
 	settings.floating_hands = strcmp(config_string("vr.hands"), "game") != 0;
 	settings.arms = settings.floating_hands && strcmp(config_string("vr.hands"), "floating") != 0;
@@ -1081,6 +1089,40 @@ static void test_head_apply(void)
 	memcpy(vr.views.head.orientation, turn, sizeof(turn));
 }
 
+/* debug.vr_test_fov: each eye's field of view as the setting says, and
+each eye turned outward by its angle (as a headset with canted displays
+has them), for automated tests of what the edges of a wide view show */
+static void test_fov_apply(void)
+{
+	float angles[5];
+	int eye, side;
+
+	if (!settings.test_fov)
+		return;
+	/* (short of 90 degrees, where the tangents are) */
+	for (side = 0; side < 5; side++)
+		angles[side] = settings.test_fov_angles[side] < -85.0f ? -85.0f : settings.test_fov_angles[side] > 85.0f ? 85.0f :
+			settings.test_fov_angles[side];
+	for (eye = 0; eye < 2; eye++)
+	{
+		float outward = tanf(angles[0] * (float)M_PI / 180.0f), inward = tanf(angles[1] * (float)M_PI / 180.0f);
+		float turn[4], cant = (eye ? -angles[4] : angles[4]) * (float)M_PI / 180.0f;
+
+		vr.views.fov[eye][0] = eye ? -inward : -outward;
+		vr.views.fov[eye][1] = eye ? outward : inward;
+		vr.views.fov[eye][2] = tanf(angles[2] * (float)M_PI / 180.0f);
+		vr.views.fov[eye][3] = -tanf(angles[3] * (float)M_PI / 180.0f);
+		if (cant != 0.0f)
+		{
+			/* (about the eye's own up: the left eye turned left) */
+			turn[0] = turn[2] = 0.0f;
+			turn[1] = sinf(cant * 0.5f);
+			turn[3] = cosf(cant * 0.5f);
+			quaternion_multiply(vr.views.eye[eye].orientation, turn, vr.views.eye[eye].orientation);
+		}
+	}
+}
+
 /* the located views with the frame's jitter: the eyes turned about the
 head's centre, and all of it moved */
 static void jitter_apply(void)
@@ -1234,6 +1276,7 @@ static int frame_begin(void)
 	if (host_vr_locate(&vr.views))
 	{
 		test_head_apply();
+		test_fov_apply();
 		jitter_apply();
 		if (!vr.origin_valid || (vr.views.focused && !vr.was_focused))
 			recentre();
@@ -1374,6 +1417,7 @@ int halo_vr_view(struct halo_vr_view *view)
 	if (host_vr_locate(&vr.views))
 	{
 		test_head_apply();
+		test_fov_apply();
 		jitter_apply();
 		test_hands_apply();
 	}

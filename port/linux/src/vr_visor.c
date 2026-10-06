@@ -1033,6 +1033,9 @@ void vr_visor_composite(unsigned char *eyes[2], int width, int height, const str
 	float hud_position[3], hud_orientation[4], visor_position[3], visor_orientation[4];
 	float panel_position[VR_PANEL_COUNT][3], panel_orientation[VR_PANEL_COUNT][4];
 	int eye, x, y, panel, over;
+	/* the eyes' pixels the glass is not over (its edges in view) */
+	long uncovered[2] = { 0, 0 };
+	static int covered_logged;
 
 	layer_pose(&layers->hud_pose, layers->hud_head_locked, head, hud_position, hud_orientation);
 	layer_pose(&layers->visor_pose, 1, head, visor_position, visor_orientation);
@@ -1080,8 +1083,16 @@ void vr_visor_composite(unsigned char *eyes[2], int width, int height, const str
 				{
 					layer_over(pixel, visor_pixels, visor_width, visor_height, uv);
 				}
+				else if (layers->visor)
+					uncovered[eye]++;
 			}
 		}
+	}
+	if (layers->visor && (uncovered[0] || uncovered[1] || !covered_logged))
+	{
+		platform_log("vr: visor: the glass's edges %s (%ld pixels of the left eye past them, %ld of the right)",
+			uncovered[0] || uncovered[1] ? "in view" : "out of view", uncovered[0], uncovered[1]);
+		covered_logged = 1;
 	}
 }
 #endif
