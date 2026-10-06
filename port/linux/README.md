@@ -834,7 +834,10 @@ open the hand. The grenade leaves from your hand as you let go, along the
 way the hand was going (lifted 8 degrees), as hard as you threw it: a
 throw of 5 m/s or faster throws as far as the left trigger does, slower
 ones shorter (to 30% of it), never farther. The left trigger still throws
-as ever, and the right bumper switches the grenade.
+as ever, and the right bumper switches the grenade. From the moment you
+take it until it flies, the grenade (frag or plasma, the one selected) is
+in your left hand, whatever `vr.hands` is, and it leaves from just where
+you held it.
 
 - What counts as a swing: the hand moving forward (the way your head
   faces) faster than 2 m/s, with the grip held for 0.1 s at least, from
@@ -1067,7 +1070,15 @@ supersampling costs as above, and multisampling the eye pass
   grenade is then moved to the hand and its velocity turned along the
   hand's throw, its speed the game's times the throw's power. With the
   hands the controllers', the first-person throw is not played: the left
-  hand is the player's, and the weapon stays in the right. The hand's
+  hand is the player's, and the weapon stays in the right. The game's
+  grenade, in the hand of the player's body from the throw's third frame,
+  is not drawn in first person (nor is the body), so the grenade in the
+  left hand is drawn by `game/vr_grenade.c` after the first-person weapon:
+  the selected type's projectile model at the controller's grip, from the
+  grip taking it until the game throws it (let go of, where the hand let it
+  go). The thrown one starts at the point last drawn, and its first tick is
+  drawn from there (`render_interpolation_object_from`), not swept from the
+  body's hand. The hand's
   velocity is measured over 35 ms of its poses (at their display times),
   and the release's is the fastest of the last 0.1 s, as the hand slows
   as it opens. While the hand throws, the player's facing turns along the
