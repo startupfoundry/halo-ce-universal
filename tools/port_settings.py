@@ -177,6 +177,7 @@ RESTART = "(RESTART)"
 VR_HANDS = [("ARMS", "arms"), ("FLOATING HANDS", "floating"), ("GAME ARMS", "game")]
 VR_AIM = [("CONTROLLER", "controller"), ("HEAD", "head"), ("GAMEPAD", "gamepad")]
 VR_DISPLAY = f"{PE}/vr_display/vr_display_screen"
+VR_VISOR = f"{PE}/vr_visor/vr_visor_screen"
 VR_SCREENS = {
     "vr_controls": {
         "screen": "vr_controls_screen",
@@ -221,8 +222,6 @@ VR_SCREENS = {
             ("WORLD SCALE:", "vr.world_scale",
              [(f"{scale:g}X", f"{scale:g}") for scale in (0.75, 0.8, 0.9, 1, 1.1, 1.2, 1.25, 1.5)],
              "How large the world looks: more than 1 makes it\nlarger, and you smaller in it.", None),
-            ("HUD:", "vr.hud", [("VISOR", "visor"), ("FLAT", "flat")],
-             "On your helmet's visor, curved about your eyes,\nor a flat screen before them.", None),
             ("HUD DISTANCE:", "vr.hud_distance",
              [(f"{distance:.1f} M", f"{distance:g}") for distance in (1, 1.5, 2, 2.5, 3, 4, 5)],
              "How far in front of your eyes the HUD is.", None),
@@ -242,8 +241,45 @@ VR_SCREENS = {
              [("HEADSET'S", "0"), *((f"{rate} HZ", str(rate)) for rate in (72, 80, 90, 120, 144))],
              "The headset's rate, if it offers it; the game\ndraws a frame each refresh. From the next start.",
              None),
+            ("HUD AND VISOR...", None, VR_VISOR,
+             "The HUD on your helmet's visor: its depths, its\nlag and glow, the helmet's rim, the shields' energy.",
+             None),
         ],
     },
+}
+# the visor's page of VR Display (titled as it is: its title's picture is
+# VR Display's), every value of it read again as it changes (vr_visor.c)
+VR_SCREENS["vr_visor"] = {
+    "screen": "vr_visor_screen",
+    "header": ("header_vr_display", f"{PE}/vr_display/header_vr_display"),
+    "spacing": 28,
+    "rows": [
+        ("HUD:", "vr.hud", [("VISOR", "visor"), ("FLAT", "flat")],
+         "On your helmet's visor, curved about your eyes,\nor a flat screen before them.", None),
+        ("HUD DEPTH:", "vr.hud_depth",
+         [("NONE", "0"), *((f"{depth:g}X", f"{depth:g}") for depth in (0.5, 0.75, 1, 1.25, 1.5, 2))],
+         "How far apart in depth the HUD's parts are: the\ntracker nearest, the waypoints farthest.", None),
+        ("HUD LAG:", "vr.hud_lag",
+         [("NONE", "0"), *((f"{round(lag * 1000)} MS", f"{lag:g}") for lag in (0.02, 0.03, 0.05, 0.08, 0.12))],
+         "How far the HUD trails your head's turns.", None),
+        ("HUD GLOW:", "vr.hud_glow",
+         [("NONE", "0"), *((f"{round(glow * 100)}%", f"{glow:g}") for glow in (0.25, 0.5, 0.75, 1))],
+         "The HUD's glow on the visor's glass.", None),
+        ("HELMET RIM:", "vr.helmet_rim",
+         [("NONE", "0"), *((f"{round(rim * 100)}%", f"{rim:g}") for rim in (0.25, 0.5, 0.75, 1))],
+         "The helmet's faceplate about the visor, at the\nedges of your view, in depth.", None),
+        ("RIM DEPTH:", "vr.helmet_rim_depth",
+         [(f"{round(depth * 100)} CM", f"{depth:g}") for depth in (0.06, 0.08, 0.1, 0.12, 0.15, 0.2)],
+         "How far before your eyes the helmet's rim is.", None),
+        ("VISOR SHADE:", "vr.visor_frame",
+         [("NONE", "0"), *((f"{round(frame * 100)}%", f"{frame:g}") for frame in (0.2, 0.4, 0.6, 0.8, 1))],
+         "The helmet's shadow on the glass at the edges of\nyour view, and the glass's faint gold.", None),
+        ("SHIELD EFFECTS:", "vr.visor_effects", ON_OFF,
+         "The shields on the glass: their energy, the red\nwarning, the HUD's flicker as they break.", None),
+        ("SHIELD ENERGY:", "vr.visor_energy",
+         [(f"{round(energy * 100)}%", f"{energy:g}") for energy in (0.25, 0.5, 0.75, 1, 1.5, 2)],
+         "How strong the shields' energy across the glass\nis, as they are hit and as they recharge.", None),
+    ],
 }
 SCREENS.update(VR_SCREENS)
 # the profile menu's VR Setup item (in VR only), below About, its
