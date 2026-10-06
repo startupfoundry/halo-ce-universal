@@ -239,10 +239,27 @@ static const struct config_setting config_settings[] =
 	{ "vr.world_scale", _config_real, "1.0", "HALO_VR_WORLD_SCALE", _environment_value, _platform_desktop,
 		"How large the world looks: more than 1 makes it larger (and your\n"
 		"movements and eyes smaller in it)." },
+	{ "vr.hud", _config_string, "\"visor\"", "HALO_VR_HUD", _environment_value, _platform_desktop,
+		"The HUD: \"visor\" on your helmet's visor, curved about your eyes, with\n"
+		"its glow, the visor's rim and the shields' effects on it (vr.hud_lag,\n"
+		"vr.hud_glow, vr.visor_frame, vr.visor_effects); \"flat\" a flat screen\n"
+		"before your eyes." },
 	{ "vr.hud_distance", _config_real, "2.0", "HALO_VR_HUD_DISTANCE", _environment_value, _platform_desktop,
 		"How far in front of your eyes the HUD is, in metres." },
 	{ "vr.hud_size", _config_real, "60.0", "HALO_VR_HUD_SIZE", _environment_value, _platform_desktop,
 		"How wide the HUD is, in degrees of your view (20 to 120)." },
+	{ "vr.hud_lag", _config_real, "0.03", "HALO_VR_HUD_LAG", _environment_value, _platform_desktop,
+		"With vr.hud = \"visor\", how far the HUD trails your head's turns, in\n"
+		"seconds (smoothed, never more than 1.5 degrees behind; 0 none, up to 0.2)." },
+	{ "vr.hud_glow", _config_real, "0.5", "HALO_VR_HUD_GLOW", _environment_value, _platform_desktop,
+		"With vr.hud = \"visor\", the HUD's glow on the visor (0 none to 1)." },
+	{ "vr.visor_frame", _config_real, "0.6", "HALO_VR_VISOR_FRAME", _environment_value, _platform_desktop,
+		"With vr.hud = \"visor\", the helmet about the visor: the edges of your\n"
+		"view darkened, and the glass's faint tint (0 none to 1)." },
+	{ "vr.visor_effects", _config_boolean, "true", "HALO_VR_VISOR_EFFECTS", _environment_value, _platform_desktop,
+		"With vr.hud = \"visor\", the shields on the visor: its rim flares as they\n"
+		"are hit, pulses red while they are low, glows as they recharge, and the\n"
+		"HUD flickers as they break." },
 	{ "vr.menu_distance", _config_real, "2.5", "HALO_VR_MENU_DISTANCE", _environment_value, _platform_desktop,
 		"How far in front of you the menus are, in metres." },
 	{ "vr.menu_width", _config_real, "2.6", "HALO_VR_MENU_WIDTH", _environment_value, _platform_desktop,

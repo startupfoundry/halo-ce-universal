@@ -19,7 +19,11 @@ sky's differ in depth range only).
 
 The HUD is drawn afterwards, from a camera looking where the head does with
 the HUD layer's field of view, so that the reticle and waypoints fall where
-they belong on the layer before the eyes.
+they belong on the layer before the eyes. On the visor (vr.hud = "visor",
+port/linux/src/vr_visor.c) the layer is curved about the eyes and laid out
+in angles, and the camera looks where the HUD does (a moment behind the
+head): what the HUD projects from the world goes through the same curve
+(vr_render_hud_to_screen).
 */
 
 #ifdef HALO_VR
@@ -35,6 +39,8 @@ they belong on the layer before the eyes.
 #include "units/units.h"
 #include "tag_files/tag_files.h"
 #include "interface/hud.h"
+#include "interface/hud_unit.h"
+#include "game/game_engine.h"
 #include "physics/collision_usage.h"
 #include "physics/collisions.h"
 #include "render/render.h"
@@ -553,15 +559,93 @@ boolean vr_render_hides_object(long object_index)
 	return vr_render.active && object_index == vr_render.seated_unit_index;
 }
 
+/* hud_unit.c's: the script hides the shields' meter */
+#define HUD_SHIELD_HIDDEN_BIT 2
+
+/* the HUD on the visor, while its pass draws (vr_render_hud_camera to
+vr_render_hud_end): the half angles it spans (radians) */
+static struct
+{
+	boolean curved;
+	real half_angles[2];
+} vr_hud;
+
+/* the player as the visor shows it (port/linux/src/vr_visor.c): its unit's
+shields and health, as the HUD's meters have them, while it plays and the
+HUD is up */
+static void visor_state_tell(void)
+{
+	struct halo_vr_visor_state state;
+	long player_index = local_player_get_player_index(0);
+	struct unit_datum *unit = NULL;
+
+	memset(&state, 0, sizeof(state));
+	if (player_index != NONE && !cinematic_in_progress() && hud_scripted_globals && hud_scripted_globals->show_hud)
+		unit = unit_try_and_get(player_get(player_index)->unit_index);
+	if (unit && unit->object.body_vitality > 0.0f && !TEST_FLAG(unit->object.damage_flags, _object_dead_bit))
+	{
+		state.active = TRUE;
+		state.has_shield = game_engine_has_shield(player_index) &&
+			!TEST_FLAG(hud_unit_port_script_flags(), HUD_SHIELD_HIDDEN_BIT);
+		state.shield = unit->object.shield_vitality;
+		state.charging = TEST_FLAG(unit->object.damage_flags, _object_shield_charging_bit);
+		state.body = unit->object.body_vitality;
+	}
+	halo_vr_visor_state(&state);
+}
+
+/* render_cameras.c: a point before the HUD's camera (its view space: x
+right, y up, -z ahead) in its screen, while the HUD is on the visor: by its
+angles across and up, as the HUD's image is laid out (vr_visor.c), not
+through the camera's plane; FALSE leaves it to the camera */
+boolean vr_render_hud_to_screen(struct render_camera const *camera, real_point3d const *view_point,
+	real_point2d *screen_point, boolean *visible)
+{
+	real across, up, x, y;
+
+	if (!vr_hud.curved)
+		return FALSE;
+	*visible = FALSE;
+	if (view_point->z >= 0.0f)
+		return TRUE;
+	across = (real)atan2(view_point->x, -view_point->z);
+	up = (real)atan2(view_point->y, sqrt(view_point->x * view_point->x + view_point->z * view_point->z));
+	x = across / vr_hud.half_angles[0];
+	y = -up / vr_hud.half_angles[1];
+	if (x >= -1.0f && x <= 1.0f && y >= -1.0f && y <= 1.0f)
+	{
+		screen_point->x = (real)(camera->viewport_bounds.x1 - camera->viewport_bounds.x0) * ((x + 1.0f) * 0.5f) +
+			camera->viewport_bounds.x0;
+		screen_point->y = (real)(camera->viewport_bounds.y1 - camera->viewport_bounds.y0) * ((y + 1.0f) * 0.5f) +
+			camera->viewport_bounds.y0;
+		*visible = TRUE;
+	}
+	else
+	{
+		screen_point->x = x;
+		screen_point->y = y;
+	}
+	return TRUE;
+}
+
+/* render.c: the HUD's pass is over */
+void vr_render_hud_end(void)
+{
+	vr_hud.curved = FALSE;
+}
+
 /* the camera the HUD is drawn from (in place of the window's): where the
-head looks, with the HUD layer's field of view; FALSE without a VR frame */
+head looks (on the visor, where the HUD does), with the HUD layer's field of
+view; FALSE without a VR frame */
 boolean vr_render_hud_camera(struct render_camera *camera)
 {
 	struct halo_vr_view *view = &vr_render.view;
 	real base_yaw;
 
+	vr_hud.curved = FALSE;
 	if (!halo_vr_frame_active())
 		return FALSE;
+	visor_state_tell();
 	base_yaw = cinematic_in_progress() || !halo_vr_aiming() ?
 		(real)atan2(camera->forward.j, camera->forward.i) : view->body_yaw;
 	vr_render_crosshair_offset[0] = vr_render_crosshair_offset[1] = 0;
@@ -575,13 +659,18 @@ boolean vr_render_hud_camera(struct render_camera *camera)
 	{
 		real pitch = view_pitch();
 
-		view_rotate(base_yaw, pitch, view->head_forward, &camera->forward);
-		view_rotate(base_yaw, pitch, view->head_up, &camera->up);
+		view_rotate(base_yaw, pitch, view->hud_forward, &camera->forward);
+		view_rotate(base_yaw, pitch, view->hud_up, &camera->up);
 		camera->vertical_field_of_view = 2.0f * (real)atan(view->hud_tangent);
-		if ((view->controller_aim || view->gamepad_aim) && halo_vr_aiming() && !vr_render_crosshair_offset[0])
+		vr_hud.curved = view->hud_visor;
+		vr_hud.half_angles[0] = view->hud_half_angles[0];
+		vr_hud.half_angles[1] = view->hud_half_angles[1];
+		if ((view->controller_aim || view->gamepad_aim || view->hud_visor) && halo_vr_aiming() &&
+			!vr_render_crosshair_offset[0])
 		{
 			/* a point far along the controller (or the player's facing, where
-			the gamepad aims), where the HUD shows it */
+			the gamepad aims; or where the head looks, which the HUD on the
+			visor trails), where the HUD shows it */
 			struct render_frustum frustum;
 			real_vector3d forward;
 			real_point3d point;
@@ -590,8 +679,10 @@ boolean vr_render_hud_camera(struct render_camera *camera)
 			render_camera_build_frustum(camera, NULL, &frustum, TRUE);
 			if (view->gamepad_aim)
 				forward = vr_render.aim_forward;
-			else
+			else if (view->controller_aim)
 				yaw_rotate(base_yaw, view->hand_forward, &forward);
+			else
+				view_rotate(base_yaw, pitch, view->head_forward, &forward);
 			point.x = camera->position.x + forward.i * 100.0f;
 			point.y = camera->position.y + forward.j * 100.0f;
 			point.z = camera->position.z + forward.k * 100.0f;

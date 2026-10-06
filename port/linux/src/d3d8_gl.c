@@ -632,6 +632,7 @@ the quad layer's image, over transparent black. The game draws both in its
 #ifdef HALO_VR
 #include "vr.h"
 #include "vr_host.h"
+#include "vr_visor.h"
 
 #ifndef GL_DEPTH_CLAMP
 #define GL_DEPTH_CLAMP 0x864F
@@ -648,6 +649,8 @@ static struct
 	present) */
 	struct render_target_entry eye_target;
 	BOOL eyes_drawn, hud_drawn;
+	/* the visor's image drawn this frame (vr_draw_visor), else 0 */
+	GLuint visor_image;
 	/* row-major (vr.h), and the screen's points' (vr.h); the serial counts
 	their changes */
 	float eye_transforms[2][16];
@@ -5277,12 +5280,16 @@ void halo_vr_set_screen_corrections(const float corrections[2][4])
 	}
 }
 
-/* debug.screenshot_every in VR: both eyes side by side (eyes<frame>.bmp)
-and the HUD over grey (hud<frame>.bmp) */
-static void vr_write_screenshots(struct render_target_entry *hud)
+/* debug.screenshot_every in VR: both eyes side by side (eyes<frame>.bmp),
+the HUD over grey (hud<frame>.bmp), and both eyes as the headset shows them,
+the layers over them as the frame submitted them (view<frame>.bmp: the
+compositor's work, done here, roughly, for a picture) */
+static void vr_write_screenshots(struct render_target_entry *hud, GLuint hud_image)
 {
 	unsigned long width = (unsigned long)vr_gl.eye_width, height = (unsigned long)vr_gl.eye_height;
 	unsigned long row, index;
+	struct vr_host_layers layers;
+	struct vr_host_pose head;
 
 	if (!*config_string("debug.screenshot_directory"))
 		return;
@@ -5300,6 +5307,29 @@ static void vr_write_screenshots(struct render_target_entry *hud)
 		for (index = 0; index < width * 2 * height; index++)
 			both[index * 4 + 3] = 0xff;
 		write_bmp("eyes", both, width * 2, height, TRUE);
+		if (halo_vr_submitted(&layers, &head) && layers.projection)
+		{
+			unsigned char *eyes[2];
+			unsigned char *hud_pixels = layers.hud && hud_image ?
+				read_target(hud_image, -1, (unsigned long)vr_gl.hud_width, (unsigned long)vr_gl.hud_height) : NULL;
+			unsigned char *visor_pixels = layers.visor && vr_gl.visor_image ?
+				read_target(vr_gl.visor_image, -1, VR_VISOR_IMAGE_SIZE, VR_VISOR_IMAGE_SIZE) : NULL;
+
+			eyes[0] = left;
+			eyes[1] = right;
+			vr_visor_composite(eyes, (int)width, (int)height, &layers, &head, hud_pixels, vr_gl.hud_width,
+				vr_gl.hud_height, visor_pixels, VR_VISOR_IMAGE_SIZE, VR_VISOR_IMAGE_SIZE);
+			for (row = 0; row < height; row++)
+			{
+				memcpy(both + row * width * 8, left + row * width * 4, width * 4);
+				memcpy(both + row * width * 8 + width * 4, right + row * width * 4, width * 4);
+			}
+			for (index = 0; index < width * 2 * height; index++)
+				both[index * 4 + 3] = 0xff;
+			write_bmp("view", both, width * 2, height, TRUE);
+			free(hud_pixels);
+			free(visor_pixels);
+		}
 		free(left);
 		free(right);
 		free(both);
@@ -5333,12 +5363,18 @@ scratch, not as coverage (the Xbox's display ignored it), and the layer
 would show nothing where it is 0: the target starts black, so a pixel's
 brightness is its coverage, and the copy makes that its alpha (the colour
 is then premultiplied, as the compositor's default blending expects).
-FALSE if the copy's program cannot be made. */
+
+On the visor (vr_visor.c) the copy curves it about the eyes: each of the
+layer's pixels is a direction from the head, whose angles across and up are
+where it is in the HUD (a cylinder layer is in angles across already). The
+HUD's light glows about it on the glass (a soft ring of its own colour), and
+it flickers as the shields break. FALSE if the copy's program cannot be
+made. */
 static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 {
-	static GLuint program;
+	static GLuint program, sampler;
 	static BOOL failed;
-	static GLint size_location;
+	static GLint size_location, curve_location, angles_location, extent_location, opacity_location, glow_location;
 	static const char vertex_source[] =
 		"#version 450 core\n"
 		"void main()\n"
@@ -5350,18 +5386,50 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 		"#version 450 core\n"
 		"uniform sampler2D hud_texture;\n"
 		"uniform vec2 size;\n"
+		"uniform float curve;\n"
+		"uniform vec2 half_angles;\n"
+		"uniform vec2 extent;\n"
+		"uniform float opacity;\n"
+		"uniform float glow;\n"
 		"out vec4 colour;\n"
 		"void main()\n"
 		"{\n"
 		/* (row 0 of the image is the target's last) */
-		"	vec4 c = texture(hud_texture, vec2(gl_FragCoord.x / size.x, 1.0 - gl_FragCoord.y / size.y));\n"
-		"	colour = vec4(c.rgb, max(c.r, max(c.g, c.b)));\n"
+		"	vec2 p = gl_FragCoord.xy / size;\n"
+		"	vec2 uv = vec2(p.x, 1.0 - p.y);\n"
+		"	if (curve > 0.5)\n"
+		"	{\n"
+		/* the direction's angles across and up: from a quad's tangents, or
+		a cylinder's angle around and tangent up */
+		"		vec2 s = (p * 2.0 - 1.0) * extent;\n"
+		"		vec2 angles = curve < 1.5 ? vec2(atan(s.x), atan(s.y / sqrt(1.0 + s.x * s.x))) :\n"
+		"			vec2(s.x, atan(s.y));\n"
+		"		uv = vec2(0.5, 0.5) + vec2(0.5, -0.5) * angles / half_angles;\n"
+		"	}\n"
+		"	vec4 c = texture(hud_texture, uv);\n"
+		"	vec4 result = vec4(c.rgb, max(c.r, max(c.g, c.b)));\n"
+		"	if (glow > 0.0)\n"
+		"	{\n"
+		"		vec2 texel = 1.0 / vec2(textureSize(hud_texture, 0));\n"
+		"		vec3 light = vec3(0.0);\n"
+		"		for (int i = 0; i < 8; i++)\n"
+		"		{\n"
+		"			float a = float(i) * 0.785398 + 0.392699;\n"
+		"			light += texture(hud_texture, uv + vec2(cos(a), sin(a)) * texel * 5.0).rgb;\n"
+		"		}\n"
+		"		light *= glow * 0.11;\n"
+		"		result.rgb += light * (1.0 - result.a);\n"
+		"		result.a += max(light.r, max(light.g, light.b)) * (1.0 - result.a);\n"
+		"	}\n"
+		"	colour = result * opacity;\n"
 		"}\n";
+	struct vr_visor_hud_image look;
 
 	if (failed)
 		return FALSE;
 	if (!program)
 	{
+		static const float transparent[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		GLuint vertex = xgpu_compile_shader(GL_VERTEX_SHADER, vertex_source, "VR HUD vertex");
 		GLuint fragment = xgpu_compile_shader(GL_FRAGMENT_SHADER, fragment_source, "VR HUD pixel");
 		GLint status = 0;
@@ -5380,7 +5448,20 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 		glUseProgram(program);
 		glUniform1i(glGetUniformLocation(program, "hud_texture"), 0);
 		size_location = glGetUniformLocation(program, "size");
+		curve_location = glGetUniformLocation(program, "curve");
+		angles_location = glGetUniformLocation(program, "half_angles");
+		extent_location = glGetUniformLocation(program, "extent");
+		opacity_location = glGetUniformLocation(program, "opacity");
+		glow_location = glGetUniformLocation(program, "glow");
+		/* (nothing past the HUD's edges, where the curve and the glow reach) */
+		glGenSamplers(1, &sampler);
+		glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+		glSamplerParameteri(sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+		glSamplerParameterfv(sampler, GL_TEXTURE_BORDER_COLOR, transparent);
 	}
+	vr_visor_hud_image(&look);
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_get(image, 0));
 	glViewport(0, 0, vr_gl.hud_width, vr_gl.hud_height);
 	glDisable(GL_SCISSOR_TEST);
@@ -5392,14 +5473,133 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	glUseProgram(program);
 	glUniform2f(size_location, (GLfloat)vr_gl.hud_width, (GLfloat)vr_gl.hud_height);
+	glUniform1f(curve_location, (GLfloat)look.curve);
+	glUniform2f(angles_location, look.half_angles[0], look.half_angles[1]);
+	glUniform2f(extent_location, look.extent[0], look.extent[1]);
+	glUniform1f(opacity_location, look.opacity);
+	glUniform1f(glow_location, look.curve ? look.glow : 0.0f);
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, hud->target.texture);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glBindSampler(0, 0);
+	glBindSampler(0, sampler);
 	glDrawArrays(GL_TRIANGLES, 0, 3);
+	glBindSampler(0, 0);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	return TRUE;
+}
+
+/* The visor's image (vr_visor.c): the helmet about the visor, darkening the
+edges of the view; the glass, a faint gold; and the shields' glows on the rim (their flare, their warning,
+their recharge rising up it). Drawn over the eyes' fields of view together
+(tangents from the middle of the head), its rim a rounded rectangle of
+their angles. The image is sRGB: its light is worked out linearly and
+written encoded, premultiplied (the glows' alpha 0: light added). */
+static void vr_draw_visor(void)
+{
+	static GLuint program;
+	static BOOL failed;
+	static GLint size_location, extent_location, fov_location, rim_location, charge_location;
+	static const char vertex_source[] =
+		"#version 450 core\n"
+		"void main()\n"
+		"{\n"
+		"	vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+		"	gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+		"}\n";
+	static const char fragment_source[] =
+		"#version 450 core\n"
+		"uniform vec2 size;\n"
+		/* (tangents: left, right, up, down) */
+		"uniform vec4 extent;\n"
+		"uniform vec4 fov;\n"
+		/* the glow on the rim (rgb) and the frame's strength (a) */
+		"uniform vec4 rim;\n"
+		/* the recharge's glow (rgb) and how far up the rim it is (a) */
+		"uniform vec4 charge;\n"
+		"out vec4 colour;\n"
+		"vec4 over(vec4 top, vec4 under) { return top + under * (1.0 - top.a); }\n"
+		"void main()\n"
+		"{\n"
+		"	vec2 p = gl_FragCoord.xy / size;\n"
+		"	vec2 t = vec2(mix(extent.x, extent.y, p.x), mix(extent.w, extent.z, p.y));\n"
+		"	vec2 edge = atan(vec2(t.x < 0.0 ? -fov.x : fov.y, t.y > 0.0 ? fov.z : -fov.w));\n"
+		"	vec2 n = abs(atan(t)) / edge;\n"
+		/* (0 in the middle, 1 at the edge of the view: the visor's rounded
+		rim) */
+		"	float r = pow(pow(n.x, 4.0) + pow(n.y, 4.0), 0.25);\n"
+		"	float shade = smoothstep(0.80, 1.04, r);\n"
+		"	float height = 0.5 + 0.5 * (t.y > 0.0 ? n.y : -n.y);\n"
+		"	vec4 light = vec4(vec3(0.85, 0.62, 0.25) * 0.035, 0.035) * rim.a * (1.0 - shade);\n"
+		"	light = over(vec4(vec3(0.010, 0.011, 0.013), 1.0) * 0.72 * shade * rim.a, light);\n"
+		/* the glows: about the rim, fading inward well before the HUD's
+		edges */
+		"	float glow = smoothstep(0.72, 1.0, r);\n"
+		"	light.rgb += rim.rgb * glow;\n"
+		"	if (charge.a >= 0.0)\n"
+		"	{\n"
+		"		float band = exp(-pow((height - charge.a) / 0.05, 2.0));\n"
+		"		light.rgb += charge.rgb * glow * (band + 0.2 * step(height, charge.a));\n"
+		"	}\n"
+		"	colour = vec4(pow(clamp(light.rgb, 0.0, 1.0), vec3(1.0 / 2.2)), clamp(light.a, 0.0, 1.0));\n"
+		"}\n";
+	struct vr_visor_image look;
+	GLuint image;
+
+	vr_visor_image(&look);
+	if (failed || !look.shown || !(image = halo_vr_image(VR_SWAPCHAIN_VISOR)))
+		return;
+	vr_gl.visor_image = image;
+	if (!program)
+	{
+		GLuint vertex = xgpu_compile_shader(GL_VERTEX_SHADER, vertex_source, "VR visor vertex");
+		GLuint fragment = xgpu_compile_shader(GL_FRAGMENT_SHADER, fragment_source, "VR visor pixel");
+		GLint status = 0;
+
+		program = glCreateProgram();
+		glAttachShader(program, vertex);
+		glAttachShader(program, fragment);
+		glLinkProgram(program);
+		glGetProgramiv(program, GL_LINK_STATUS, &status);
+		if (!vertex || !fragment || !status)
+		{
+			platform_log("vr: cannot make the visor's program; no visor is shown");
+			failed = TRUE;
+			return;
+		}
+		size_location = glGetUniformLocation(program, "size");
+		extent_location = glGetUniformLocation(program, "extent");
+		fov_location = glGetUniformLocation(program, "fov");
+		rim_location = glGetUniformLocation(program, "rim");
+		charge_location = glGetUniformLocation(program, "charge");
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_get(image, 0));
+	glViewport(0, 0, VR_VISOR_IMAGE_SIZE, VR_VISOR_IMAGE_SIZE);
+	glDisable(GL_SCISSOR_TEST);
+	glDisable(GL_BLEND);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_POLYGON_OFFSET_FILL);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glUseProgram(program);
+	glUniform2f(size_location, (GLfloat)VR_VISOR_IMAGE_SIZE, (GLfloat)VR_VISOR_IMAGE_SIZE);
+	glUniform4fv(extent_location, 1, look.extent);
+	glUniform4fv(fov_location, 1, look.fov);
+	{
+		float rim[4], charge[4];
+
+		rim[0] = look.glow[0];
+		rim[1] = look.glow[1];
+		rim[2] = look.glow[2];
+		rim[3] = look.frame;
+		charge[0] = look.charge[0];
+		charge[1] = look.charge[1];
+		charge[2] = look.charge[2];
+		charge[3] = look.charge_level;
+		glUniform4fv(rim_location, 1, rim);
+		glUniform4fv(charge_location, 1, charge);
+	}
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 /* the eyes' depth into its swapchain (XR_KHR_composition_layer_depth),
@@ -5499,6 +5699,7 @@ OpenXR's GL images (the eyes were drawn so), and the frame ended */
 static void vr_present(BOOL screenshot)
 {
 	struct render_target_entry *hud = NULL;
+	GLuint hud_image = 0;
 
 	vr_timing(3);
 	vr_copy_depth();
@@ -5512,15 +5713,16 @@ static void vr_present(BOOL screenshot)
 		hud = render_target_get(&device.back_buffer);
 		vr_gl.pass = pass;
 	}
-	if (screenshot)
-		vr_write_screenshots(hud);
 	if (hud)
 	{
-		GLuint image = halo_vr_image(VR_SWAPCHAIN_HUD);
-
-		if (!image || !vr_copy_hud(hud, image))
-			hud = NULL;
+		hud_image = halo_vr_image(VR_SWAPCHAIN_HUD);
+		if (!hud_image || !vr_copy_hud(hud, hud_image))
+			hud_image = 0;
 	}
+	/* the visor, with the eyes (not in the menus: vr_visor.c) */
+	vr_gl.visor_image = 0;
+	if (vr_gl.eyes_drawn)
+		vr_draw_visor();
 	vr_gl.pass = HALO_VR_PASS_NONE;
 	vr_gl.multiview = FALSE;
 	vr_gl.left_eye = FALSE;
@@ -5544,7 +5746,9 @@ static void vr_present(BOOL screenshot)
 			vr_gl.gpu_worst = milliseconds;
 		vr_gl.gpu_frames++;
 	}
-	halo_vr_present(vr_gl.eyes_drawn, hud != NULL);
+	halo_vr_present(vr_gl.eyes_drawn, hud_image != 0);
+	if (screenshot)
+		vr_write_screenshots(hud, hud_image);
 	vr_gl.eyes_drawn = FALSE;
 	vr_gl.hud_drawn = FALSE;
 	vr_timing(0);

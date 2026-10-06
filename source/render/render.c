@@ -160,6 +160,7 @@ boolean vr_render_camera(struct render_camera *camera, struct render_camera *ras
 void vr_render_frustum_bounds(real_rectangle2d *bounds);
 void vr_render_end(void);
 boolean vr_render_hud_camera(struct render_camera *camera);
+void vr_render_hud_end(void);
 boolean vr_render_weapon_camera(struct render_camera *camera);
 void vr_render_crosshairs(void);
 
@@ -671,6 +672,7 @@ static void render_vr_hud(
 		halo_screen_ui_offset(FALSE);
 	}
 	rasterizer_window_end();
+	vr_render_hud_end();
 	profile_render_window_end();
 
 	return;

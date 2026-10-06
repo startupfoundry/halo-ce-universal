@@ -31,6 +31,7 @@ it or in steps ("level", "snap"). The controllers are a gamepad's halves.
 #include "port_config.h"
 #include "vr.h"
 #include "vr_host.h"
+#include "vr_visor.h"
 
 #include <SDL3/SDL.h>
 #include <math.h>
@@ -337,6 +338,7 @@ int halo_vr_initialize(void)
 		vr.info.scale = 1.0f;
 	vr.info.hud_width = HUD_WIDTH;
 	vr.info.hud_height = HUD_HEIGHT;
+	vr.info.visor_width = vr.info.visor_height = VR_VISOR_IMAGE_SIZE;
 	vr.info.standing = settings.standing;
 	vr.info.refresh_rate_wanted = (float)config_real("vr.refresh_rate");
 	vr.info.depth = config_boolean("vr.depth");
@@ -347,7 +349,8 @@ int halo_vr_initialize(void)
 		return 0;
 	}
 	vr.force_render = config_boolean("debug.vr_force_render");
-	vr.acquired[0] = vr.acquired[1] = vr.acquired[2] = -1;
+	vr.acquired[0] = vr.acquired[1] = vr.acquired[2] = vr.acquired[3] = -1;
+	vr_visor_initialize(&vr.info);
 	vr.initialized = 1;
 	vr.statistics = config_boolean("debug.gpu_stats");
 	platform_log("vr: %s, eyes %dx%d, %.0f Hz", vr.info.system_name, vr.info.eye_width, vr.info.eye_height,
@@ -814,7 +817,7 @@ static int frame_begin(void)
 	if (vr.pending)
 	{
 		host_vr_frame_end(&vr.pending_layers);
-		vr.acquired[0] = vr.acquired[1] = vr.acquired[2] = -1;
+		vr.acquired[0] = vr.acquired[1] = vr.acquired[2] = vr.acquired[3] = -1;
 		vr.pending = 0;
 	}
 	settings_read();
@@ -889,7 +892,12 @@ void halo_vr_present(int eyes_drawn, int hud_drawn)
 			vr.depth_far > vr.depth_near;
 		pending->near_z = vr.depth_near;
 		pending->far_z = vr.depth_far;
-		if (pending->projection && !vr.menus)
+		if (pending->projection && !vr.menus && vr_visor_enabled())
+		{
+			/* the HUD on the helmet's visor (vr_visor.c) */
+			vr_visor_layers(pending, vr.acquired[VR_SWAPCHAIN_VISOR] >= 0);
+		}
+		else if (pending->projection && !vr.menus)
 		{
 			/* the HUD before the eyes, where the HUD's camera looks */
 			float width = 2.0f * settings.hud_distance * tanf(settings.hud_size * 0.5f * (float)M_PI / 180.0f);
@@ -917,6 +925,15 @@ void halo_vr_present(int eyes_drawn, int hud_drawn)
 	vr.pending = 1;
 	vr.frame = 0;
 	vr.depth_written = 0;
+}
+
+int halo_vr_submitted(struct vr_host_layers *layers, struct vr_host_pose *head)
+{
+	if (!vr.pending)
+		return 0;
+	*layers = vr.pending_layers;
+	*head = vr.views.head;
+	return 1;
 }
 
 void halo_vr_depth_range(float near_metres, float far_metres)
@@ -989,6 +1006,27 @@ int halo_vr_view(struct halo_vr_view *view)
 	(void)head;
 	view->body_yaw = vr.body_yaw;
 	view->hud_tangent = tanf(settings.hud_size * 0.5f * (float)M_PI / 180.0f) * (float)HUD_HEIGHT / (float)HUD_WIDTH;
+	/* the HUD's camera: where the head looks, or on the visor where the HUD
+	does (a moment behind the head, vr.hud_lag) */
+	memcpy(view->hud_forward, view->head_forward, sizeof(view->hud_forward));
+	memcpy(view->hud_up, view->head_up, sizeof(view->hud_up));
+	vr_visor_follow(&vr.views.head, vr.views.fov, vr.views.display_elapsed > 0.0f ? vr.views.display_elapsed :
+		vr.views.display_period, settings.hud_distance, settings.hud_size);
+	view->hud_visor = vr_visor_enabled();
+	if (view->hud_visor)
+	{
+		float orientation[4];
+
+		vr_visor_orientation(orientation);
+		quaternion_rotate(orientation, forward, v);
+		game_axes(v, vr.origin_yaw, view->hud_forward);
+		quaternion_rotate(orientation, up, v);
+		game_axes(v, vr.origin_yaw, view->hud_up);
+		view->hud_half_angles[0] = settings.hud_size * 0.5f * (float)M_PI / 180.0f;
+		view->hud_half_angles[1] = view->hud_half_angles[0] * (float)HUD_HEIGHT / (float)HUD_WIDTH;
+		/* (in angles, a tangent at the middle: the reticle's size there) */
+		view->hud_tangent = view->hud_half_angles[1];
+	}
 	view->world_units_per_metre = settings.world_scale / METRES_PER_WORLD_UNIT;
 	/* the right controller */
 	view->controller_aim = settings.controller_aim && vr.views.aim[1].valid;
@@ -1110,6 +1148,7 @@ void halo_vr_aim_release(void)
 void halo_vr_menus(int active)
 {
 	vr.menus = active;
+	vr_visor_menus(active);
 }
 
 int halo_vr_aiming(void)
