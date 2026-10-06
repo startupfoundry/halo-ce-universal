@@ -20,8 +20,9 @@ are tangents: left and down negative.
 enum
 {
 	VR_SWAPCHAIN_EYES = 0, /* a 2-layer texture array: layer 0 the left eye */
-	VR_SWAPCHAIN_HUD,      /* the HUD and the menus, a quad layer */
+	VR_SWAPCHAIN_HUD,      /* the HUD and the menus, a quad (or cylinder) layer */
 	VR_SWAPCHAIN_DEPTH,    /* the eyes' depth (XR_KHR_composition_layer_depth), 2 layers */
+	VR_SWAPCHAIN_VISOR,    /* the helmet's visor: its rim and its glows, a quad layer */
 	VR_SWAPCHAIN_COUNT,
 	VR_SWAPCHAIN_IMAGES = 4,
 };
@@ -53,6 +54,8 @@ struct vr_host_info
 	float scale;
 	/* in */
 	int hud_width, hud_height;
+	/* in: the visor's image (0: none); out: 0 if it could not be made */
+	int visor_width, visor_height;
 	int standing;
 	float refresh_rate_wanted; /* 0: the runtime's choice */
 	int depth; /* in: submit the eyes' depth; out: the runtime takes it */
@@ -61,6 +64,8 @@ struct vr_host_info
 	int image_count[VR_SWAPCHAIN_COUNT];
 	unsigned int images[VR_SWAPCHAIN_COUNT][VR_SWAPCHAIN_IMAGES];
 	float refresh_rate;
+	/* the runtime shows cylinder layers (XR_KHR_composition_layer_cylinder) */
+	int cylinder;
 	char system_name[64];
 };
 
@@ -107,11 +112,20 @@ struct vr_host_layers
 	int depth;
 	float near_z, far_z;
 	/* the HUD image on a quad: in front of the head (head_locked), or at
-	pose in the play space; size in metres */
+	pose in the play space; size in metres. On a cylinder instead
+	(hud_cylinder, where vr_host_info's cylinder says the runtime has them):
+	about pose's y axis, hud_radius from it, hud_angle radians around (its
+	middle along pose's -z), hud_size[1] metres high */
 	int hud;
 	int hud_head_locked;
 	struct vr_host_pose hud_pose;
 	float hud_size[2];
+	int hud_cylinder;
+	float hud_radius, hud_angle;
+	/* the visor's image on a quad before the head, under the HUD's */
+	int visor;
+	struct vr_host_pose visor_pose;
+	float visor_size[2];
 };
 
 /* after the GL context is made and current (on its thread); 0 if there is
