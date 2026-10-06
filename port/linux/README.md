@@ -1091,8 +1091,11 @@ In the headset, Settings' VR Setup (below About; only there while the
 game plays in VR) sets most of these with the left d-pad: VR Controls
 (the hands, the aim, the gamepad's view, two-handed aiming, the melee
 punch, turning and the vehicles' view) and, from its last row, VR Display (the play position,
-the eye height, the world's scale, the HUD (on the visor or flat), the HUD's
-and the menus' distance and size, the resolution and the refresh rate). OK writes them to
+the eye height, the world's scale, the HUD's and the menus' distance and
+size, the resolution and the refresh rate) and, from its last row, its
+visor page (the HUD on the visor or flat, its depth, lag and glow, the
+helmet's rim and its depth, the glass's shade, the shields' effects and
+the strength of their energy). OK writes them to
 `config.toml`, and they apply at once, but those marked RESTART:
 `vr.height`, `vr.resolution_scale` and `vr.refresh_rate`, which the
 headset's session is opened with, apply from the next start.
@@ -1122,9 +1125,15 @@ headset's session is opened with, apply from the next start.
 | `vr.hud` | `"visor"` | `HALO_VR_HUD` | `"visor"`: the HUD on the helmet's visor (below, "The HUD on the visor"). `"flat"`: a flat screen in front of the eyes. |
 | `vr.hud_distance`, `vr.hud_size` | `2.0`, `60.0` | `HALO_VR_HUD_DISTANCE`, `HALO_VR_HUD_SIZE` | The HUD's distance in front of the eyes (metres) and width (degrees of the view). On the visor, the radius of its curve and the angle that it spans. |
 | `vr.hud_lag` | `0.03` | `HALO_VR_HUD_LAG` | With `vr.hud = "visor"`: how far the HUD trails the head's turns, as the time constant of its smoothing in seconds (up to `0.2`), never more than 1.5 degrees behind. `0`: the HUD turns with the head exactly. |
+| `vr.hud_depth` | `1.0` | `HALO_VR_HUD_DEPTH` | With `vr.hud = "visor"`: how far apart in depth the HUD's parts are, times their own distances from the HUD's (the four below), from `0` (all at `vr.hud_distance`, one layer) to `2`. Never nearer than 1 m. |
+| `vr.hud_depth_tracker`, `vr.hud_depth_status`, `vr.hud_depth_weapon`, `vr.hud_depth_world` | `-0.55`, `-0.35`, `-0.25`, `0.5` | `HALO_VR_HUD_DEPTH_TRACKER`, `HALO_VR_HUD_DEPTH_STATUS`, `HALO_VR_HUD_DEPTH_WEAPON`, `HALO_VR_HUD_DEPTH_WORLD` | The distances from the HUD's (metres, at `vr.hud_depth` 1; nearer less than 0) of the motion tracker; the shields and the health; the weapon, its ammunition and the grenades; and the waypoints and the players' names. At the defaults: 1.45, 1.65, 1.75 and 2.5 m, the rest of the HUD (the crosshair, the messages) 2 m. |
+| `vr.hud_tracker_tilt` | `20.0` | `HALO_VR_HUD_TRACKER_TILT` | How far the motion tracker tilts back, in degrees (-45 to 45). |
 | `vr.hud_glow` | `0.5` | `HALO_VR_HUD_GLOW` | With `vr.hud = "visor"`: the HUD's glow on the glass, from `0` (none) to `1`. |
-| `vr.visor_frame` | `0.6` | `HALO_VR_VISOR_FRAME` | With `vr.hud = "visor"`: the helmet about the visor, the edges of the view darkened and the glass faintly gold, from `0` (none) to `1`. |
-| `vr.visor_effects` | `true` | `HALO_VR_VISOR_EFFECTS` | With `vr.hud = "visor"`: the shields on the visor. Its rim flares as they are hit, pulses red while they are low or gone (or while the health is low without them), and glows as they recharge, the glow rising up the rim as they fill. The HUD flickers as they break, and comes up as you take control. |
+| `vr.helmet_rim` | `1.0` | `HALO_VR_HELMET_RIM` | With `vr.hud = "visor"`: the helmet's faceplate about the visor, from `0` (none) to `1`: its lip at the very edges of the view, in depth, the brow and the chin, never a frame. |
+| `vr.helmet_rim_depth`, `vr.helmet_rim_reach` | `0.10`, `0.07` | `HALO_VR_HELMET_RIM_DEPTH`, `HALO_VR_HELMET_RIM_REACH` | How far before the eyes the rim's lip is (metres, `0.05` to `0.25`), and how far in from the edges of the view it begins (a fraction of them, `0` to `0.2`): at the defaults, about 2 degrees of each eye's view at its outer edge, its top and its bottom (the log says how much). |
+| `vr.visor_frame` | `0.4` | `HALO_VR_VISOR_FRAME` | With `vr.hud = "visor"`: the glass: the helmet's shadow on it from the brow and the chin, faint at the sides, and its faint gold, from `0` (none) to `1`. |
+| `vr.visor_effects` | `true` | `HALO_VR_VISOR_EFFECTS` | With `vr.hud = "visor"`: the shields on the glass: their energy across it (the armour's own, below, "The HUD on the visor") as they are hit and as they recharge, rising to their level and flashing as they are full; its rim pulses red while they are low or gone (or while the health is low without them), giving way to their energy as they recharge; the HUD flickers as they break, and comes up as you take control. |
+| `vr.visor_energy` | `1.0` | `HALO_VR_VISOR_ENERGY` | With `vr.visor_effects`: how strong the shields' energy on the glass is, from `0` (none) to `2`. |
 | `vr.menu_distance`, `vr.menu_width` | `2.5`, `2.6` | `HALO_VR_MENU_DISTANCE`, `HALO_VR_MENU_WIDTH` | The menus' distance and width, in metres. |
 | `debug.vr_force_render` | `false` | `HALO_VR_FORCE_RENDER` | Draw the frames while the runtime says not to (the headset not worn), to measure them. |
 | `debug.vr_test_turn` | `0.0` | `HALO_VR_TEST_TURN` | Turn the player this many degrees a second, for automated tests without hands. |
@@ -1220,14 +1229,46 @@ supersampling costs as above, and multisampling the eye pass
   (`vr.hud_lag`): smoothed toward it, without a spring, so that it never
   overshoots and is still while the head is, and held within 1.5 degrees;
   its camera looks where the layer does, so the waypoints stay on what they
-  mark, and the reticle where the head aims. The visor is a layer of its
-  own, under the HUD's, on the head exactly (the helmet does not lag): the
-  edges of the eyes' fields of view darkened, the glass a faint gold, and
-  the shields' glows about its rim, from the player's unit as the game has
-  it (its shields, their recharging, its health). The glows stay out past
-  the HUD, toward the edges of the view; the HUD's flicker as the shields
-  break is three dips in under half a second. The copy adds the HUD's
-  glow, a soft ring of its own light about each element.
+  mark, and the reticle where the head aims. The HUD's parts have depths
+  of their own (`vr.hud_depth`): its draws are grouped by the anchor the
+  game places each element by (`hud_draw.c`; `hud.c` holds the waypoints
+  and the players' names, and the messages, to groups of their own), each
+  group but the middle's drawn into a target of its own and shown on a
+  quad of its own (four more layers, `VR_SWAPCHAIN_PANEL`), its region of
+  the HUD curved in its image as the HUD is, at its own distance, placed
+  with the HUD's layer: from the head, each element is where it was, only
+  nearer or farther, and the waypoints stay on what they mark. Quads,
+  which every runtime has; the stereo depth is the compositor's, and the
+  HUD's pixels never enter the eyes' images, whose depth is the world's.
+  The visor's glass is a layer of its own 0.105 m before the head, over
+  the HUD's, on the head exactly (the helmet does not lag): the helmet's
+  shadow on it from the brow and the chin, the glass a faint gold, and
+  the shields on it, from the player's unit as the game has it. Their
+  energy is the armour's own: the unit's modifier shader (the Chief's
+  `characters\cyborg\shaders\shield hit`, a plasma), its two noise maps
+  (`characters\elite\bitmaps\plasma shield noise`) moving through the
+  glass at their scales, directions and periods, combined as its pixel
+  shader combines them (`rasterizer_xbox_plasma_energy.c`), coloured amber
+  facing and blue grazing as its colours are, and as bright as the game
+  makes the armour glow (the unit's function the plasma's intensity comes
+  from: the Chief's 'shield glow source', from the shields' recent damage).
+  As the shields recharge, it fills the glass from below to their level,
+  brightest at its front, and flashes as they are full (the Chief's
+  collision model has no recharging effect of its own, and its depleted
+  effect is particles: no flash of the screen's to move onto the glass).
+  More at the glass's edges than in its middle. The red warning stays
+  toward the rim; the HUD's flicker as the shields break is three dips in
+  under half a second. The helmet's rim (`vr.helmet_rim`) is drawn into
+  the eyes' images (`vr_draw_rim`, multiview), before the head as the
+  faceplate is: the visor's opening, wide and low, its lip just in from the
+  edges of each eye's own view, its bevel and frame curving back toward the
+  face, only its brow and chin to see (the sides barely, the corners not at
+  all), the lip catching the light; each eye sees its own side, both the
+  brow and the chin, in depth. It is sized by the runtime's fields of view,
+  so it stays at their edges on any headset. Other effects on the glass
+  (water, dirt, cracks, reflections) would be drawn with it
+  (`vr_draw_visor`). The copy adds the HUD's glow, a soft ring of its own
+  light about each element.
   `debug.screenshot_every` also writes what the headset shows
   (`view*.bmp`): the layers drawn over each eye's image as the compositor
   would place them. With `vr.aim = "controller"` or `"gamepad"` the reticle is not in
