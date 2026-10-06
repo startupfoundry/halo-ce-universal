@@ -86,6 +86,41 @@ struct halo_vr_view
 	int gamepad_pitch;
 };
 
+/* the grenade thrown with the left hand (vr.grenade_throw = "gesture"):
+the left grip holds it, a swing starts the game's throw (as the left trigger
+does), and letting go releases it (port/linux/game/vr_grenade.c) */
+enum
+{
+	HALO_VR_THROW_NONE = 0,
+	HALO_VR_THROW_SWING,    /* the hand swings, holding the grenade */
+	HALO_VR_THROW_RELEASED, /* the hand has let go of it */
+};
+
+struct halo_vr_throw
+{
+	int phase;
+	/* where the grenade goes: the hand's velocity (as it let go, else as
+	it swings now), lifted a little, as a direction in the game's axes from
+	the recentred head (turned by body_yaw in the world) and as the
+	player's facing (yaw: body_yaw added; pitch) */
+	float direction[3];
+	float yaw, pitch;
+	/* the throw's speed, of the game's (0 to 1), and the hand's (metres a
+	second) */
+	float power;
+	float speed;
+	/* where the hand let go, from the recentred head (game axes, metres) */
+	float position[3];
+	float body_yaw;
+	float world_units_per_metre;
+	/* the first-person hands are the controllers' (vr.hands = "arms",
+	"floating"): the left one throws as the hand does, the weapon stays in
+	the right */
+	int hands;
+	/* debug.vr_throw_log: the game logs its side of each throw too */
+	int log;
+};
+
 /* ---------- vr.c */
 
 /* the VR build with vr.enabled */
@@ -111,6 +146,14 @@ taking over): the next halo_vr_aim starts again from the player's facing */
 void halo_vr_aim_release(void);
 /* debug.vr_test_hands holds the controllers (vr_hands.c marks them) */
 int halo_vr_test_hands(void);
+/* the throw with the left hand: its phase (HALO_VR_THROW_*), and what it
+is; whether the game would throw a grenade now (the first player on foot,
+with one, not throwing), each frame, which the hand needs to take one; and
+that the game's throw is over (the grenade thrown, or not to be), which
+ends the gesture's */
+int halo_vr_throw(struct halo_vr_throw *throw_state);
+void halo_vr_throw_ready(int ready);
+void halo_vr_throw_done(void);
 
 /* the platform layer's (d3d8_gl.c, xinput_sdl.c) */
 /* opens the session once the GL context is current; 0 if VR cannot run */

@@ -826,6 +826,9 @@ void first_person_weapons_update(
 }
 
 #ifdef HALO_VR
+/* port/linux/game/vr_grenade.c's */
+boolean vr_grenade_throw_advance(long unit_index, short *frame_index, short key_frame_index, boolean first_person);
+
 /* the VR mode's hands (port/linux/game/vr_hands.c): the first-person
 animation graph of the local player's weapon in hand, or NONE */
 long first_person_weapon_vr_graph(
@@ -1953,6 +1956,25 @@ static void first_person_weapon_update(
 			}
 		}
 
+#ifdef HALO_VR
+		/* port: the VR mode's grenade thrown with the left hand: the throw's
+		first-person animation, as the unit's (units.c), waits a frame
+		before its release while the hand holds the grenade, and goes on to
+		it at once when the hand lets go sooner (port/linux/game/vr_grenade.c) */
+		if ((first_person_weapon->state==_first_person_weapon_state_throw_grenade ||
+			first_person_weapon->state==_first_person_weapon_state_throw_grenade_overheated) &&
+			first_person_weapon->state_animation.index!=NONE &&
+			!vr_grenade_throw_advance(first_person_weapon->unit_index,
+				&first_person_weapon->state_animation.frame_index,
+				TAG_BLOCK_GET_ELEMENT(&animation_graph->animations, first_person_weapon->state_animation.index,
+					struct animation)->private_key_frame_index,
+				TRUE))
+		{
+			animation_update_result= _animation_no_key_frame;
+			sound_definition_index= NONE;
+		}
+		else
+#endif
 		/* port: a PAL map's first-person animation at the NTSC maps' pace,
 		which the weapon's timing keeps (port/linux/game/pal_tags.c) */
 		if (!pal_tags_first_person_advance(local_player_index,

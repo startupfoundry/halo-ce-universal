@@ -4,7 +4,7 @@ VR.C
 The VR mode's platform side (HALO_VR; vr.h, port/linux/README.md "VR"): the
 OpenXR session through the host (vr_host.h, port/linux/arm64/host_vr.c),
 the frame loop, the head's pose in the game's axes, the controllers as a
-gamepad, turning and recentring.
+gamepad, turning and recentring, and the left hand's grenade throw.
 
 Frames: the runtime paces the game. The present of one frame ends it and
 waits for the next (halo_vr_present), whose head pose then aims the player
@@ -60,6 +60,43 @@ between the hands, smoothed over this time constant (seconds) */
 #define FOREGRIP_RELEASED 0.3f
 #define TWO_HANDED_SMOOTHING 0.05f
 #define TWO_HANDED_BLEND 0.15f
+/* a grenade thrown with the left hand (vr.grenade_throw = "gesture"; the
+names are the ones debug.vr_throw_log uses):
+- held: the left grip pulled past THROW_GRIP_PRESSED (not on a long gun's
+  foregrip, not with the right grip too, which recentres), with a grenade
+  to throw;
+- the swing: once held THROW_HOLD_SECONDS, the hand moving forward (along
+  where the head faces, level) faster than THROW_SWING_SPEED, from no
+  farther ahead of the eyes than THROW_WINDUP_REACH since it was taken (a
+  throw starts from a hand drawn back, not one held out): the game's throw
+  begins, as with the left trigger;
+- let go: the grip below THROW_GRIP_RELEASED releases it, along the
+  hand's fastest velocity over the last THROW_RELEASE_LOOKBACK seconds (each
+  measured over THROW_VELOCITY_SECONDS), lifted THROW_LIFT_DEGREES, as hard
+  as the game throws at THROW_FULL_SPEED and up (as hard as THROW_LEAST_POWER
+  of it at the least); a swing not let go of in THROW_SWING_SECONDS throws
+  anyway, at its fastest (the game's throw has begun: its grenade is spent);
+- a release the game has not thrown in THROW_RELEASED_SECONDS is dropped.
+A grip let go of before any swing throws nothing. (Speeds in metres a
+second.) */
+#define THROW_GRIP_PRESSED 0.6f
+#define THROW_GRIP_RELEASED 0.3f
+#define THROW_HOLD_SECONDS 0.10f
+#define THROW_SWING_SPEED 2.0f
+#define THROW_WINDUP_REACH 0.15f
+#define THROW_VELOCITY_SECONDS 0.035f
+#define THROW_RELEASE_LOOKBACK 0.10f
+#define THROW_LIFT_DEGREES 8.0f
+#define THROW_FULL_SPEED 5.0f
+#define THROW_LEAST_POWER 0.3f
+#define THROW_SWING_SECONDS 0.75f
+#define THROW_RELEASED_SECONDS 0.5f
+/* the left hand's places and velocities kept for it (a power of two: more
+than THROW_RELEASE_LOOKBACK's frames at 144 Hz) */
+#define THROW_SAMPLES 32
+/* the left trigger held for the game's throw at least this many frames (a
+tick is 33 ms; a frame at 144 Hz 7) */
+#define THROW_PRESS_FRAMES 6
 /* debug.vr_test_hands: the poses it gives the controllers, each held this
 many frames unless it says */
 #define TEST_HANDS_POSES 16
@@ -124,6 +161,27 @@ static struct
 	float two_handed_weight;
 	float two_handed_line[3];
 	int long_gun;
+	/* the grenade thrown with the left hand: the gesture's state (THROW_*),
+	how long it has been in it, the left hand's last places (OpenXR axes)
+	and velocities, each at its time (seconds), whether the grip was
+	pressed last frame, the farthest forward of the eyes the hand has been
+	since it took the grenade, the left trigger's frames left, the game's
+	readiness, and the throw; whether the hand went forward faster than a
+	swing last frame (debug.vr_throw_log: a swing not taken, once) */
+	int throw_state;
+	int throw_fast;
+	float throw_seconds;
+	double throw_clock;
+	unsigned int throw_sample;
+	float throw_places[THROW_SAMPLES][3];
+	float throw_velocities[THROW_SAMPLES][3];
+	double throw_times[THROW_SAMPLES];
+	int throw_places_valid[THROW_SAMPLES];
+	int throw_grip_pressed;
+	float throw_nearest;
+	int throw_press_frames;
+	int throw_ready;
+	struct halo_vr_throw throw_out;
 	float depth_near, depth_far;
 	/* the presented frame, ended when the next begins (halo_vr_present) */
 	struct vr_host_layers pending_layers;
@@ -159,6 +217,9 @@ static struct
 	int gamepad_pitch;
 	float weapon_offset[3];
 	int melee_gesture;
+	/* vr.grenade_throw = "gesture", and debug.vr_throw_log */
+	int throw_gesture;
+	int throw_log;
 	int vehicle_first_person;
 	float test_turn;
 	float test_jitter;
@@ -248,6 +309,8 @@ static void settings_read(void)
 	settings.gamepad_snap = !strcmp(config_string("vr.gamepad_view"), "snap");
 	settings.gamepad_pitch = !settings.gamepad_snap && strcmp(config_string("vr.gamepad_view"), "level") != 0;
 	settings.melee_gesture = config_boolean("vr.melee_gesture");
+	settings.throw_gesture = !strcmp(config_string("vr.grenade_throw"), "gesture");
+	settings.throw_log = config_boolean("debug.vr_throw_log");
 	settings.vehicle_first_person = strcmp(config_string("vr.vehicle_view"), "third_person") != 0;
 	settings.test_turn = (float)config_real("debug.vr_test_turn") * (float)M_PI / 180.0f;
 	settings.test_jitter = (float)config_real("debug.vr_test_jitter") * 0.001f;
@@ -519,6 +582,293 @@ static void weapon_pointing(float forward[3], float up[3])
 	}
 }
 
+/* ---------- the grenade thrown with the left hand */
+
+enum
+{
+	THROW_IDLE = 0,
+	THROW_HELD,
+	THROW_SWING,
+	THROW_RELEASED,
+};
+
+static void throw_enter(int state)
+{
+	vr.throw_state = state;
+	vr.throw_seconds = 0.0f;
+}
+
+/* the hand's velocity at a sample, over THROW_VELOCITY_SECONDS back from
+it (or as long as the samples go back, if a frame or more); 0 if there is
+none */
+static int throw_velocity_at(unsigned int sample, float velocity[3])
+{
+	unsigned int newest = sample & (THROW_SAMPLES - 1), back;
+	int axis;
+
+	if (!vr.throw_places_valid[newest])
+		return 0;
+	for (back = 1; back < THROW_SAMPLES; back++)
+	{
+		unsigned int older = (sample - back) & (THROW_SAMPLES - 1);
+		double span;
+
+		if (!vr.throw_places_valid[older])
+			break;
+		span = vr.throw_times[newest] - vr.throw_times[older];
+		if (span >= THROW_VELOCITY_SECONDS || back == THROW_SAMPLES - 1 ||
+			!vr.throw_places_valid[(sample - back - 1) & (THROW_SAMPLES - 1)])
+		{
+			if (span <= 0.0)
+				return 0;
+			for (axis = 0; axis < 3; axis++)
+				velocity[axis] = (float)((vr.throw_places[newest][axis] - vr.throw_places[older][axis]) / span);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static float length3(const float v[3])
+{
+	return sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+}
+
+/* the throw as the hand lets go: along its fastest velocity of the last
+THROW_RELEASE_LOOKBACK seconds (the hand slows as it opens), lifted, as hard
+as that speed throws; where the hand is now */
+static void throw_release(const char *why)
+{
+	struct halo_vr_throw *out = &vr.throw_out;
+	unsigned int newest = vr.throw_sample & (THROW_SAMPLES - 1), back;
+	float fastest[3] = { 0.0f, 0.0f, 0.0f }, speed = 0.0f, f[3], offset[3];
+	float level, pitch, lift = THROW_LIFT_DEGREES * (float)M_PI / 180.0f;
+	int axis;
+
+	for (back = 0; back < THROW_SAMPLES; back++)
+	{
+		unsigned int sample = (vr.throw_sample - back) & (THROW_SAMPLES - 1);
+		float *v = vr.throw_velocities[sample];
+
+		if (!vr.throw_places_valid[sample] ||
+			vr.throw_times[newest] - vr.throw_times[sample] > THROW_RELEASE_LOOKBACK)
+		{
+			break;
+		}
+		if (length3(v) > speed)
+		{
+			speed = length3(v);
+			memcpy(fastest, v, sizeof(fastest));
+		}
+	}
+	/* (no speed: along where the head looks, as the game throws, softly) */
+	if (speed <= 0.0f)
+	{
+		static const float backwards[3] = { 0.0f, 0.0f, -1.0f };
+
+		quaternion_rotate(vr.views.head.orientation, backwards, fastest);
+	}
+	game_axes(fastest, vr.origin_yaw, f);
+	level = sqrtf(f[0] * f[0] + f[1] * f[1]);
+	pitch = atan2f(f[2], level) + lift;
+	if (pitch > (float)M_PI * 0.5f)
+		pitch = (float)M_PI * 0.5f;
+	out->yaw = vr.body_yaw + atan2f(f[1], f[0]);
+	out->pitch = pitch;
+	out->direction[0] = cosf(pitch) * (level > 0.0f ? f[0] / level : 1.0f);
+	out->direction[1] = cosf(pitch) * (level > 0.0f ? f[1] / level : 0.0f);
+	out->direction[2] = sinf(pitch);
+	out->speed = speed;
+	out->power = speed / THROW_FULL_SPEED;
+	if (out->power > 1.0f)
+		out->power = 1.0f;
+	if (out->power < THROW_LEAST_POWER)
+		out->power = THROW_LEAST_POWER;
+	for (axis = 0; axis < 3; axis++)
+		offset[axis] = vr.throw_places[newest][axis] - vr.origin_position[axis];
+	game_axes(offset, vr.origin_yaw, out->position);
+	out->body_yaw = vr.body_yaw;
+	out->world_units_per_metre = settings.world_scale / METRES_PER_WORLD_UNIT;
+	if (settings.throw_log)
+	{
+		platform_log("vr: throw: let go (%s) %.2f s into the swing at %.2f m/s: power %.2f, "
+			"%.0f degrees from the head's heading, pitched %.0f up", why, vr.throw_seconds, speed, out->power,
+			remainderf(out->yaw - vr.body_yaw - quaternion_yaw(vr.views.head.orientation) + vr.origin_yaw,
+				2.0f * (float)M_PI) * 180.0f / (float)M_PI, pitch * 180.0f / (float)M_PI);
+	}
+	host_vr_haptic(0, 0.6f, 0.05f);
+	throw_enter(THROW_RELEASED);
+}
+
+/* the left hand throwing a grenade, once a frame (vr.grenade_throw =
+"gesture"; THROW_* above): after two_handed_update, which takes the left
+grip first on a long gun's foregrip */
+static void throw_update(float seconds)
+{
+	static const float backwards[3] = { 0.0f, 0.0f, -1.0f };
+	const struct vr_host_pose *hand = &vr.views.grip[0];
+	unsigned int sample;
+	float velocity[3] = { 0.0f, 0.0f, 0.0f }, forward[3], ahead = 0.0f, speed_forward = 0.0f, length;
+	int pressed = vr.input.left_grip > THROW_GRIP_PRESSED;
+	int released = vr.input.left_grip < THROW_GRIP_RELEASED;
+	int pressing = pressed && !vr.throw_grip_pressed;
+	int able, axis;
+
+	if (vr.throw_press_frames > 0)
+		vr.throw_press_frames--;
+	vr.throw_clock += seconds;
+	vr.throw_seconds += seconds;
+	if (pressed)
+		vr.throw_grip_pressed = 1;
+	else if (released)
+		vr.throw_grip_pressed = 0;
+
+	/* the hand's place and velocity, kept */
+	sample = ++vr.throw_sample;
+	vr.throw_places_valid[sample & (THROW_SAMPLES - 1)] = hand->valid && seconds > 0.0f;
+	memcpy(vr.throw_places[sample & (THROW_SAMPLES - 1)], hand->position, sizeof(vr.throw_places[0]));
+	vr.throw_times[sample & (THROW_SAMPLES - 1)] = vr.throw_clock;
+	if (!throw_velocity_at(sample, velocity))
+		velocity[0] = velocity[1] = velocity[2] = 0.0f;
+	memcpy(vr.throw_velocities[sample & (THROW_SAMPLES - 1)], velocity, sizeof(velocity));
+
+	/* forward: where the head faces, level; the hand's way ahead of the
+	eyes and its speed along it */
+	quaternion_rotate(vr.views.head.orientation, backwards, forward);
+	forward[1] = 0.0f;
+	length = sqrtf(forward[0] * forward[0] + forward[2] * forward[2]);
+	if (length > 1e-3f)
+	{
+		forward[0] /= length;
+		forward[2] /= length;
+		for (axis = 0; axis < 3; axis++)
+		{
+			ahead += (hand->position[axis] - vr.views.head.position[axis]) * forward[axis];
+			speed_forward += velocity[axis] * forward[axis];
+		}
+	}
+
+	able = settings.throw_gesture && settings.controller_aim && vr.aimed && hand->valid &&
+		vr.views.head.valid && !vr.two_handed && vr.input.right_grip <= 0.8f;
+	switch (vr.throw_state)
+	{
+	case THROW_IDLE:
+		/* (the grip pulled now, not already held: off a foregrip, or
+		while the game could not throw) */
+		if (able && pressing && vr.throw_ready)
+		{
+			throw_enter(THROW_HELD);
+			vr.throw_nearest = ahead;
+			host_vr_haptic(0, 0.15f, 0.02f);
+			if (settings.throw_log)
+				platform_log("vr: throw: held, %.2f m ahead of the eyes", ahead);
+		}
+		else if (pressing && settings.throw_log && settings.throw_gesture)
+		{
+			platform_log("vr: throw: the grip taken, holding nothing (%s)", vr.two_handed ? "on the foregrip" :
+				vr.input.right_grip > 0.8f ? "both grips: recentring" : !settings.controller_aim ?
+				"vr.aim is not the controller" : !vr.aimed ? "the aim is the game's" : !hand->valid ?
+				"the hand is lost" : !vr.throw_ready ? "the game cannot throw" : "the head is lost");
+		}
+		break;
+	case THROW_HELD:
+		if (ahead < vr.throw_nearest)
+			vr.throw_nearest = ahead;
+		if (!able || !vr.throw_ready)
+		{
+			if (settings.throw_log)
+				platform_log("vr: throw: dropped (%s)", vr.two_handed ? "on the foregrip" :
+					vr.input.right_grip > 0.8f ? "both grips: recentring" : !vr.throw_ready ?
+					"the game cannot throw" : "the hand or the aim is lost");
+			throw_enter(THROW_IDLE);
+		}
+		else if (released)
+		{
+			if (settings.throw_log)
+				platform_log("vr: throw: let go after %.2f s without a swing (%.2f m/s forward)",
+					vr.throw_seconds, speed_forward);
+			throw_enter(THROW_IDLE);
+		}
+		else if (vr.throw_seconds >= THROW_HOLD_SECONDS && speed_forward > THROW_SWING_SPEED &&
+			vr.throw_nearest <= THROW_WINDUP_REACH)
+		{
+			if (settings.throw_log)
+				platform_log("vr: throw: swing at %.2f m/s forward, %.2f m ahead of the eyes (drawn back to "
+					"%.2f), held %.2f s", speed_forward, ahead, vr.throw_nearest, vr.throw_seconds);
+			throw_enter(THROW_SWING);
+			vr.throw_press_frames = THROW_PRESS_FRAMES;
+		}
+		else if (settings.throw_log && speed_forward > THROW_SWING_SPEED && !vr.throw_fast)
+		{
+			platform_log("vr: throw: no swing at %.2f m/s forward: held %.2f s (of %.2f), drawn back to %.2f m "
+				"ahead of the eyes (of %.2f)", speed_forward, vr.throw_seconds, THROW_HOLD_SECONDS,
+				vr.throw_nearest, THROW_WINDUP_REACH);
+		}
+		break;
+	case THROW_SWING:
+		/* the game's throw has begun: the grenade is let go of, or thrown
+		anyway */
+		if (released)
+			throw_release("the grip");
+		else if (vr.throw_seconds >= THROW_SWING_SECONDS)
+			throw_release("never let go");
+		else if (!hand->valid)
+			throw_release("the hand lost");
+		break;
+	case THROW_RELEASED:
+		if (vr.throw_seconds >= THROW_RELEASED_SECONDS)
+		{
+			if (settings.throw_log)
+				platform_log("vr: throw: the game threw nothing");
+			throw_enter(THROW_IDLE);
+		}
+		break;
+	}
+	/* (the game's facing during a swing: along the hand's velocity) */
+	if (vr.throw_state == THROW_SWING)
+	{
+		float f[3];
+
+		game_axes(velocity, vr.origin_yaw, f);
+		if (length3(f) > 0.5f)
+		{
+			vr.throw_out.yaw = vr.body_yaw + atan2f(f[1], f[0]);
+			vr.throw_out.pitch = atan2f(f[2], sqrtf(f[0] * f[0] + f[1] * f[1])) +
+				THROW_LIFT_DEGREES * (float)M_PI / 180.0f;
+		}
+	}
+	vr.throw_fast = speed_forward > THROW_SWING_SPEED;
+}
+
+int halo_vr_throw(struct halo_vr_throw *throw_state)
+{
+	int phase = vr.throw_state == THROW_SWING ? HALO_VR_THROW_SWING :
+		vr.throw_state == THROW_RELEASED ? HALO_VR_THROW_RELEASED : HALO_VR_THROW_NONE;
+
+	if (!vr.initialized)
+		phase = HALO_VR_THROW_NONE;
+	*throw_state = vr.throw_out;
+	throw_state->phase = phase;
+	throw_state->hands = settings.floating_hands && settings.controller_aim;
+	throw_state->log = settings.throw_log;
+	return phase;
+}
+
+void halo_vr_throw_ready(int ready)
+{
+	vr.throw_ready = ready;
+}
+
+void halo_vr_throw_done(void)
+{
+	if (vr.throw_state == THROW_SWING || vr.throw_state == THROW_RELEASED)
+	{
+		if (settings.throw_log && vr.throw_state == THROW_SWING)
+			platform_log("vr: throw: the game's throw ended before the hand let go");
+		throw_enter(THROW_IDLE);
+	}
+}
+
 /* the controllers' turning and recentring, once a frame */
 static void input_update(void)
 {
@@ -553,6 +903,8 @@ static void input_update(void)
 		}
 	}
 	two_handed_update(seconds);
+	/* (the poses' times: from one frame's display to the next's) */
+	throw_update(vr.views.display_elapsed > 0.0f ? vr.views.display_elapsed : seconds);
 	vr.hand_valid = vr.views.grip[1].valid;
 	memcpy(vr.hand_position, vr.views.grip[1].position, sizeof(vr.hand_position));
 	/* debug.vr_test_turn: turning without hands, for automated tests (the
@@ -1195,6 +1547,10 @@ void halo_vr_gamepad(void *gamepad)
 	analog(pad, XINPUT_GAMEPAD_WHITE, buttons & VR_BUTTON_LEFT_BUMPER);
 	analog(pad, XINPUT_GAMEPAD_BLACK, buttons & VR_BUTTON_RIGHT_BUMPER);
 	trigger = (BYTE)(vr.input.left_trigger * 255.0f);
+	/* (the left hand's swing throws as the left trigger does: the game's
+	throw, which its release then times, vr_grenade.c) */
+	if (vr.throw_state == THROW_SWING || vr.throw_press_frames > 0)
+		trigger = 255;
 	if (trigger > pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER])
 		pad->bAnalogButtons[XINPUT_GAMEPAD_LEFT_TRIGGER] = trigger;
 	trigger = (BYTE)(vr.input.right_trigger * 255.0f);

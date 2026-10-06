@@ -985,6 +985,12 @@ boolean network_objects_creating_host_object(void);
 void network_damage_note_grenade(long unit_index, short grenade_type);
 /* network_game_globals.c's */
 boolean network_game_distributed_client(void);
+#ifdef HALO_VR
+/* port/linux/game/vr_grenade.c's */
+boolean vr_grenade_throw_advance(long unit_index, short *frame_index, short key_frame_index, boolean first_person);
+boolean vr_grenade_release(long unit_index, long grenade_index, real_vector3d *initial_velocity);
+boolean vr_grenade_first_person_throw(long unit_index);
+#endif
 static void unit_drop_grenades(
 	long unit_index);
 static void unit_drop_inventory_weapons(
@@ -4565,6 +4571,12 @@ boolean unit_throw_grenade_begin(
 						}
 					}
 
+#ifdef HALO_VR
+					/* port: not for the VR mode's grenade thrown with the left
+					hand while the first-person hands are the controllers'
+					(port/linux/game/vr_grenade.c) */
+					if (vr_grenade_first_person_throw(unit_index))
+#endif
 					first_person_weapon_message_from_unit(unit_index, 0x11);
 					player_control_unzoom(unit_index);
 
@@ -10285,6 +10297,44 @@ short unit_update_animation(
 
 	if (unit->object.animation.state.index!=NONE)
 	{
+#ifdef HALO_VR
+		/* port: the VR mode's grenade thrown with the left hand: the throw
+		animation waits a frame before its release (its key frame) while
+		the hand holds the grenade, and goes on to it at once when the hand
+		lets go sooner, the grenade put in the hand first if it is not there
+		yet (port/linux/game/vr_grenade.c) */
+		boolean vr_held = FALSE;
+
+		if (unit->unit.animation.state==_unit_state_throw_grenade &&
+			(unit->unit.grenade_throw_state==_unit_grenade_throw_wind_up ||
+			unit->unit.grenade_throw_state==_unit_grenade_throw_in_hand))
+		{
+			struct animation const *throw_animation = TAG_BLOCK_GET_ELEMENT(
+				&animation_graph_definition_get(unit->object.animation.animation_graph_index)->animations,
+				unit->object.animation.state.index,
+				struct animation);
+			short frame_index = unit->object.animation.state.frame_index;
+
+			if (!vr_grenade_throw_advance(unit_index, &frame_index, throw_animation->private_key_frame_index,
+				FALSE))
+			{
+				vr_held = TRUE;
+			}
+			else if (frame_index!=unit->object.animation.state.frame_index)
+			{
+				if (unit->unit.grenade_throw_state==_unit_grenade_throw_wind_up)
+				{
+					unit_throw_grenade_move_to_hand(unit_index);
+				}
+				unit->object.animation.state.frame_index = frame_index;
+			}
+		}
+		if (vr_held)
+		{
+			animation_update_result = 0;
+		}
+		else
+#endif
 		animation_update_result = unit_animation_update(
 			unit_index,
 			unit->object.animation.animation_graph_index,
@@ -11873,6 +11923,16 @@ static void unit_throw_grenade_release(
 					scale_vector3d(&unit->unit.aiming_vector, scale, &initial_velocity);
 				}
 			}
+#ifdef HALO_VR
+			/* port: the VR mode's grenade thrown with the left hand leaves
+			from the hand, along its throw, as hard as it threw it
+			(port/linux/game/vr_grenade.c): not the weaker throw of a grenade
+			let go of before the animation's release, which the hand times */
+			if (vr_grenade_release(unit_index, grenade_index, &initial_velocity))
+			{
+				premature = FALSE;
+			}
+#endif
 
 			if (premature)
 			{
