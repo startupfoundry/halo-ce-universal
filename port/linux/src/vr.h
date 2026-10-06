@@ -10,7 +10,7 @@ The game draws one view from the centre of the head, its field of view the
 union of both eyes', and the renderer draws each of its draws into both eyes
 at once (GL_OVR_multiview2), each vertex's clip position moved from the
 centre view's to its eye's by a fixed transform per eye (halo_vr_set_eye_
-transforms). The HUD and the menus go to a quad layer of their own.
+transforms). The HUD and the menus go to a layer of their own.
 
 Game axes: forward, left, up (the game's x, y, z at a yaw of 0).
 */
@@ -84,6 +84,28 @@ struct halo_vr_view
 	/* vr.gamepad_view = "camera": the view is pitched with the facing too
 	(before the head's turn), as the flat screen's camera is */
 	int gamepad_pitch;
+	/* the HUD on the visor (vr.hud = "visor"): curved about the eyes, laid
+	out in angles, hud_half_angles across and up (radians); its camera
+	looks along hud_forward and hud_up (game axes from the recentred head:
+	the head's, a moment behind it with vr.hud_lag) */
+	int hud_visor;
+	float hud_half_angles[2];
+	float hud_forward[3];
+	float hud_up[3];
+};
+
+/* the player as the visor shows it (vr.hud = "visor", vr.visor_effects),
+told once a frame (vr_render.c) */
+struct halo_vr_visor_state
+{
+	/* the player's unit is alive and plays (no cinematic) */
+	int active;
+	/* its shields (0 to 1, more when overcharged; has_shield: the game has
+	them), recharging, and its body's health (0 to 1) */
+	int has_shield;
+	float shield;
+	int charging;
+	float body;
 };
 
 /* the grenade thrown with the left hand (vr.grenade_throw = "gesture"):
@@ -158,6 +180,9 @@ ends the gesture's */
 int halo_vr_throw(struct halo_vr_throw *throw_state);
 void halo_vr_throw_ready(int ready);
 void halo_vr_throw_done(void);
+
+/* the player, for the visor's effects (vr_visor.c) */
+void halo_vr_visor_state(const struct halo_vr_visor_state *state);
 
 /* the platform layer's (d3d8_gl.c, xinput_sdl.c) */
 /* opens the session once the GL context is current; 0 if VR cannot run */

@@ -846,6 +846,17 @@ boolean render_camera_view_to_screen(
 		981,
 		screen_point);
 
+#ifdef HALO_VR
+	{
+		/* the VR mode's HUD on the visor: through its curve (port/linux/game/
+		vr_render.c) */
+		extern boolean vr_render_hud_to_screen(struct render_camera const *camera, real_point3d const *view_point,
+			real_point2d *screen_point, boolean *visible);
+
+		if (vr_render_hud_to_screen(camera, view_point, screen_point, &result))
+			return result;
+	}
+#endif
 	if (view_point->z < 0.0f)
 	{
 		real inverse_depth = -1.0f / view_point->z;
