@@ -593,6 +593,12 @@ static const struct config_setting config_settings[] =
 		"Log each step of a grenade thrown with the left hand (vr.grenade_throw):\n"
 		"the grip taken, the swing (or why not), the release's speed and\n"
 		"direction, and the game's throw timed to it." },
+
+	{ "debug.vr_test_seat", _config_string, "\"\"", "HALO_VR_TEST_SEAT", _environment_value, _platform_desktop,
+		"Seat the first VR player in the nearest vehicle's seat whose label has\n"
+		"this text in it, as the action button does, and take them out later,\n"
+		"logging the view's motion each frame, for automated tests:\n"
+		"\"<label> <seconds in> [<seconds seated>]\" (\"gunner\" 5 10); empty none." },
 #endif
 	{ "debug.null_renderer", _config_boolean, "false", "HALO_NULL_RENDERER", _environment_set_is_true, _platform_all,
 		"Run without a window, drawing nothing." },

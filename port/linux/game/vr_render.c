@@ -106,6 +106,8 @@ static struct
 short vr_render_crosshair_offset[2];
 
 void vr_render_screen_point_end(void);
+/* vr_seat.c's */
+void vr_seat_log_camera(real_point3d const *position, real_vector3d const *forward, real_vector3d const *up);
 
 /* ---------- maths */
 
@@ -307,6 +309,7 @@ boolean vr_render_camera(struct render_camera *camera, struct render_camera *ras
 	camera->position.y += offset.j * view->world_units_per_metre;
 	camera->position.z += offset.k * view->world_units_per_metre;
 	vr_render.head_position = camera->position;
+	vr_seat_log_camera(&camera->position, &camera->forward, &camera->up);
 
 	for (eye = 0; eye < 2; eye++)
 	{

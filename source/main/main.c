@@ -674,6 +674,9 @@ typedef char screenshot_and_framerate_globals_size_assert[
 	sizeof(struct _screenshot_and_framerate_globals) == 0x38B ? 1 : -1];
 
 void network_test_update(boolean main_menu_loaded, real seconds);
+#ifdef HALO_VR
+void vr_seat_test_update(void);
+#endif
 
 /* ---------- prototypes */
 
@@ -3452,6 +3455,11 @@ void main_loop(
 			network_test_update(main_globals.main_menu_scenario_loaded, main_globals.seconds_elapsed);
 			/* port: voice chat, in the lobby and in game (port/linux/game/network_voice.c) */
 			network_voice_update();
+
+#ifdef HALO_VR
+			/* the VR mode's vehicle seat test (port/linux/game/vr_seat.c) */
+			vr_seat_test_update();
+#endif
 			connection = main_globals.connection;
 			if (connection==_game_connection_network_client)
 			{
