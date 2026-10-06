@@ -514,6 +514,27 @@ boolean vr_render_hands(struct vr_hands_frame *frame)
 	return TRUE;
 }
 
+/* vr_grenade.c: the left controller in the world, during the eye pass:
+its grip's position, turned as it points (as vr_render_hands has it), and
+the world's units a metre; FALSE when it is not known */
+boolean vr_render_left_hand(real_matrix4x3 *hand, real *units)
+{
+	struct halo_vr_view *view = &vr_render.view;
+	real_vector3d forward, up;
+	real_point3d position;
+
+	if (!vr_render.active || !view->left_hand_valid || !view->controller_aim || !halo_vr_aiming())
+		return FALSE;
+	yaw_rotate(vr_render.base_yaw, view->left_hand_forward, &forward);
+	yaw_rotate(vr_render.base_yaw, view->left_hand_up, &up);
+	normalize3d(&forward);
+	normalize3d(&up);
+	hand_point(view->left_grip_position, &position);
+	matrix4x3_from_point_and_vectors(hand, &position, &forward, &up);
+	*units = view->world_units_per_metre;
+	return TRUE;
+}
+
 /* player_control.c: the weapon is a long gun, which the left hand may hold
 by its foregrip too (vr.two_handed): any but the pistols, the needler, the
 flag and the ball */

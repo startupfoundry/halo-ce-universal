@@ -30,6 +30,13 @@ stays in the right. While the hand throws, the player's facing turns along
 the throw (player_control.c), which the netcode carries: a host's or
 another player's copy of the throw, released when its own animation lets
 go, goes the same way.
+
+From the grip taking it until the game throws it, the grenade (the current
+type's projectile's model) is drawn in the left hand, in the first-person
+pass, whatever the hands; the game's own grenade hangs from the hand of the
+player's body, which is not drawn in first person. The thrown grenade
+starts where the held one was drawn last, and is drawn from there
+(render_interpolation_object_from), not from the body's hand.
 */
 
 #ifdef HALO_VR
@@ -37,16 +44,40 @@ go, goes the same way.
 #include "cseries.h"
 #include "math/real_math.h"
 #include "game/game.h"
+#include "game/game_globals.h"
 #include "game/players.h"
 #include "items/weapons.h"
+#include "models/model_definitions.h"
+#include "models/models.h"
+#include "objects/object_definitions.h"
 #include "objects/objects.h"
+#include "render/render.h"
+#include "scenario/scenario.h"
 #include "units/units.h"
 
 #include "../src/vr.h"
 
+#include <float.h>
 #include <math.h>
 
+/* the grenade held in the left hand (vr_grenade_draw): its middle from the
+controller's grip, in metres along where the hand points, to its right (the
+left palm's side) and up; the hand's fingers close about it there */
+#define HELD_FORWARD 0.02f
+#define HELD_RIGHT 0.03f
+#define HELD_UP -0.01f
+/* its size, of the game's: the game's grenades are large for a human hand
+(a frag about 20 cm), but smaller here, the one thrown would grow as it
+leaves the hand */
+#define HELD_SCALE 1.0f
+/* drawn at its finest detail (as many pixels as its finest level wants) */
+#define HELD_DETAIL_PIXELS 1000.0f
+
 void platform_log(char const *format, ...);
+/* vr_render.c's */
+boolean vr_render_left_hand(real_matrix4x3 *hand, real *units);
+/* render_interpolation.c's */
+void render_interpolation_object_from(long object_index, real_point3d const *position);
 
 static struct
 {
@@ -60,6 +91,10 @@ static struct
 	boolean released;
 	short key_frame_index;
 	boolean hold_logged[2];
+	/* the grenade drawn in the hand last (vr_grenade_draw), in the world:
+	where the thrown one starts */
+	boolean drawn_valid;
+	real_matrix4x3 drawn;
 } vr_grenade = { NONE };
 
 /* the first player's unit, which the VR mode plays */
@@ -212,6 +247,79 @@ boolean vr_grenade_throw_advance(long unit_index, short *frame_index, short key_
 	return TRUE;
 }
 
+/* first_person_weapons.c, as the first-person weapon is drawn (flags: its
+model's): the grenade the left hand holds, the current type's projectile's
+model in the hand, from when the grip takes it until the game throws it,
+whatever the hands (vr.hands). Let go of, it stays where the hand let it go
+until the game throws it from there (vr_grenade_release). (The game's own
+grenade, in the hand of the player's body from the throw's third frame, is
+not drawn in first person, as the body is not.) */
+void vr_grenade_draw(unsigned long flags)
+{
+	struct halo_vr_throw throw_state;
+	struct game_globals *globals;
+	struct game_globals_grenade *grenade;
+	struct model *model;
+	real_matrix4x3 node_matrices[MAXIMUM_NODES_PER_MODEL];
+	long unit_index = vr_grenade_player_unit();
+	long model_index;
+	short grenade_type;
+
+	halo_vr_throw(&throw_state);
+	if (unit_index == NONE || !throw_state.held)
+	{
+		vr_grenade.drawn_valid = FALSE;
+		return;
+	}
+	grenade_type = unit_get_current_grenade_type(unit_index);
+	globals = scenario_get_game_globals();
+	if (grenade_type < 0 || grenade_type >= globals->grenades.count)
+		return;
+	grenade = TAG_BLOCK_GET_ELEMENT(&globals->grenades, grenade_type, struct game_globals_grenade);
+	if (grenade->projectile.index == NONE)
+		return;
+	model_index = object_definition_get(grenade->projectile.index)->object.model.index;
+	if (model_index == NONE)
+		return;
+	model = model_definition_get(model_index);
+	if (model->nodes.count <= 0 || model->nodes.count > MAXIMUM_NODES_PER_MODEL)
+		return;
+	/* (let go of: where it was drawn last) */
+	if (throw_state.phase != HALO_VR_THROW_RELEASED || !vr_grenade.drawn_valid)
+	{
+		real_matrix4x3 hand;
+		real units;
+
+		if (!vr_render_left_hand(&hand, &units))
+			return;
+		hand.position.x += (hand.forward.i * HELD_FORWARD - hand.left.i * HELD_RIGHT + hand.up.i * HELD_UP) * units;
+		hand.position.y += (hand.forward.j * HELD_FORWARD - hand.left.j * HELD_RIGHT + hand.up.j * HELD_UP) * units;
+		hand.position.z += (hand.forward.k * HELD_FORWARD - hand.left.k * HELD_RIGHT + hand.up.k * HELD_UP) * units;
+		vr_grenade.drawn = hand;
+		vr_grenade.drawn_valid = TRUE;
+	}
+	/* the model's nodes in their default pose about the hand */
+	model_get_node_matrices(model, node_matrices, &vr_grenade.drawn.position, &vr_grenade.drawn.forward,
+		&vr_grenade.drawn.up);
+	if (HELD_SCALE != 1.0f)
+	{
+		short node_index;
+
+		for (node_index = 0; node_index < model->nodes.count; node_index++)
+		{
+			real_point3d *position = &node_matrices[node_index].position;
+
+			node_matrices[node_index].scale *= HELD_SCALE;
+			position->x = vr_grenade.drawn.position.x + (position->x - vr_grenade.drawn.position.x) * HELD_SCALE;
+			position->y = vr_grenade.drawn.position.y + (position->y - vr_grenade.drawn.position.y) * HELD_SCALE;
+			position->z = vr_grenade.drawn.position.z + (position->z - vr_grenade.drawn.position.z) * HELD_SCALE;
+		}
+	}
+	render_model(model_index, HELD_DETAIL_PIXELS, node_matrices, NULL, NULL, NULL,
+		object_get_cached_render_lighting(unit_index, FLT_MAX), &vr_grenade.drawn.position, 0.0f, NULL, unit_index, 0,
+		flags);
+}
+
 /* units.c, as the unit lets its grenade go with the velocity the game
 gives it (world units a tick): the hand's throw (TRUE), the grenade moved to
 the hand and its velocity turned along the throw, as hard as the hand threw
@@ -235,7 +343,12 @@ boolean vr_grenade_release(long unit_index, long grenade_index, real_vector3d *i
 	hand.x = eye.x + (throw_state.position[0] * c - throw_state.position[1] * s) * units;
 	hand.y = eye.y + (throw_state.position[0] * s + throw_state.position[1] * c) * units;
 	hand.z = eye.z + throw_state.position[2] * units;
+	/* (where the grenade was drawn in the hand, when it was: the frames
+	draw the eye between ticks, and the hand later than the tick's) */
+	if (vr_grenade.drawn_valid)
+		hand = vr_grenade.drawn.position;
 	object_translate(grenade_index, &hand, NULL);
+	render_interpolation_object_from(grenade_index, &hand);
 	direction.i = throw_state.direction[0] * c - throw_state.direction[1] * s;
 	direction.j = throw_state.direction[0] * s + throw_state.direction[1] * c;
 	direction.k = throw_state.direction[2];
@@ -244,6 +357,7 @@ boolean vr_grenade_release(long unit_index, long grenade_index, real_vector3d *i
 	speed = magnitude3d(initial_velocity) * throw_state.power;
 	scale_vector3d(&direction, speed, initial_velocity);
 	vr_grenade.released = TRUE;
+	vr_grenade.drawn_valid = FALSE;
 	halo_vr_throw_done();
 	if (throw_state.log)
 	{

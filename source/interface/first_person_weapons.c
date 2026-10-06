@@ -383,6 +383,11 @@ boolean pal_tags_first_person_advance(short local_player_index, long graph_index
 	short frame_index);
 real pal_tags_first_person_fraction(short local_player_index, long graph_index, short animation_index,
 	short frame_index);
+#ifdef HALO_VR
+/* port/linux/game/vr_grenade.c's */
+boolean vr_grenade_throw_advance(long unit_index, short *frame_index, short key_frame_index, boolean first_person);
+void vr_grenade_draw(unsigned long flags);
+#endif
 
 /* ---------- globals */
 
@@ -567,6 +572,14 @@ void first_person_weapon_draw(
 				}
 			}
 		}
+#ifdef HALO_VR
+		/* port: the grenade the VR mode's left hand holds, to throw it
+		(port/linux/game/vr_grenade.c) */
+		if (render.local_player_index==0)
+		{
+			vr_grenade_draw(FLAG(_render_model_first_person_bit));
+		}
+#endif
 	}
 
 	return;
@@ -826,9 +839,6 @@ void first_person_weapons_update(
 }
 
 #ifdef HALO_VR
-/* port/linux/game/vr_grenade.c's */
-boolean vr_grenade_throw_advance(long unit_index, short *frame_index, short key_frame_index, boolean first_person);
-
 /* the VR mode's hands (port/linux/game/vr_hands.c): the first-person
 animation graph of the local player's weapon in hand, or NONE */
 long first_person_weapon_vr_graph(

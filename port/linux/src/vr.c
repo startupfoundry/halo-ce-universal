@@ -849,6 +849,8 @@ int halo_vr_throw(struct halo_vr_throw *throw_state)
 		phase = HALO_VR_THROW_NONE;
 	*throw_state = vr.throw_out;
 	throw_state->phase = phase;
+	throw_state->held = vr.initialized && vr.throw_state != THROW_IDLE;
+	throw_state->world_units_per_metre = settings.world_scale / METRES_PER_WORLD_UNIT;
 	throw_state->hands = settings.floating_hands && settings.controller_aim;
 	throw_state->log = settings.throw_log;
 	return phase;
@@ -1399,7 +1401,8 @@ int halo_vr_view(struct halo_vr_view *view)
 			offset[eye] = grip->position[eye] - vr.origin_position[eye];
 		game_axes(offset, vr.origin_yaw, view->right_grip_position);
 	}
-	if (view->floating_hands && view->left_hand_valid)
+	/* (and while it holds a grenade, drawn in it whatever the hands) */
+	if (view->left_hand_valid && (view->floating_hands || vr.throw_state != THROW_IDLE))
 	{
 		const struct vr_host_pose *hand = &vr.views.aim[0];
 		const struct vr_host_pose *grip = vr.views.grip[0].valid ? &vr.views.grip[0] : hand;

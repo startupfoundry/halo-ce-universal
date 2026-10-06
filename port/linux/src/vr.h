@@ -99,6 +99,10 @@ enum
 struct halo_vr_throw
 {
 	int phase;
+	/* the hand has a grenade: taken (the grip held, before any swing),
+	swinging, or let go of and not yet thrown by the game (drawn in it,
+	vr_grenade.c) */
+	int held;
 	/* where the grenade goes: the hand's velocity (as it let go, else as
 	it swings now), lifted a little, as a direction in the game's axes from
 	the recentred head (turned by body_yaw in the world) and as the
