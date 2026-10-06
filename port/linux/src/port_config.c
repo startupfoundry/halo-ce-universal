@@ -562,6 +562,11 @@ static const struct config_setting config_settings[] =
 		"Hold the VR head still and level where it is first, for automated tests\n"
 		"(a simulated headset's wobbles): \"0\", or \"<degrees> <seconds>\" turns it\n"
 		"left and right by as many degrees over as many seconds; empty none." },
+	{ "debug.vr_test_fov", _config_string, "\"\"", "HALO_VR_TEST_FOV", _environment_value, _platform_desktop,
+		"Each VR eye's field of view, instead of the runtime's, for automated tests\n"
+		"of the edges of a wide view: \"<outward> <inward> <up> <down>[ <cant>]\",\n"
+		"in degrees from the eye's axis, each eye turned outward by <cant>; empty\n"
+		"the runtime's." },
 	{ "debug.vr_test_hands", _config_string, "\"\"", "HALO_VR_TEST_HANDS", _environment_value, _platform_desktop,
 		"Hold the VR controllers still, for automated tests without hands:\n"
 		"\"lx ly lz lyaw lpitch lroll, rx ry rz ryaw rpitch rroll[, grip[, buttons\n"
