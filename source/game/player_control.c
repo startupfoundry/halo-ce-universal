@@ -1786,6 +1786,17 @@ static void player_control_action_test_check_reset_input_blob(
 {
 	struct player_control_globals_data *globals;
 
+	/* port: debug.skip_cinematics skips each cinematic in a local game, as the
+	player's button does where it can be skipped, else running it at
+	sixteen times its speed (main_skip), so that tests reach play at once */
+	if (cinematic_in_progress() && config_boolean("debug.skip_cinematics") &&
+		game_connection() == _game_connection_local && !network_coop_active())
+	{
+		if (cinematic_can_be_skipped())
+			main_skip_cinematic();
+		else
+			main_skip(15);
+	}
 	if (input->accept && (cinematic_can_be_skipped() || network_coop_skip_offered()))
 	{
 		/* port: in network co-op the players vote to skip (network_coop.c) */
