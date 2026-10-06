@@ -44,6 +44,11 @@ head): what the HUD projects from the world goes through the same curve
 #include "physics/collision_usage.h"
 #include "physics/collisions.h"
 #include "render/render.h"
+#include "rasterizer/rasterizer.h"
+#include "objects/object_definitions.h"
+#include "shaders/shader_definitions.h"
+#include "bitmaps/bitmap_group_lookup.h"
+#include "cache/texture_cache.h"
 
 #include "../src/vr.h"
 #include "vr_hands.h"
@@ -595,9 +600,108 @@ static struct
 	real half_angles[2];
 } vr_hud;
 
+/* the shader type of a plasma (shader_transparent_plasma: the shields'
+glow on an armour), and its fields after the shader's own
+(rasterizer_xbox_plasma_energy.c reads them so) */
+#define SHADER_TYPE_PLASMA 10
+struct plasma_fields
+{
+	byte reserved00[4];
+	short intensity_exponent_source;
+	short pad06;
+	real intensity_exponent;
+	byte reserved0c[0x2C];
+	real perpendicular_alpha;
+	real_rgb_color perpendicular_color;
+	real parallel_alpha;
+	real_rgb_color parallel_color;
+	byte reserved68[0x40];
+	real primary_period;
+	real_vector3d primary_direction;
+	real primary_scale;
+	byte reservedac[0xC];
+	long primary_noise_map;
+	byte reservedbc[0x24];
+	real secondary_period;
+	real_vector3d secondary_direction;
+	real secondary_scale;
+	byte reservedf4[0xC];
+	long secondary_noise_map;
+};
+
+typedef char plasma_fields_perpendicular_offset_assert[
+	offsetof(struct plasma_fields, perpendicular_alpha) == 0x38 ? 1 : -1];
+typedef char plasma_fields_primary_offset_assert[
+	offsetof(struct plasma_fields, primary_period) == 0x98 ? 1 : -1];
+typedef char plasma_fields_primary_map_offset_assert[
+	offsetof(struct plasma_fields, primary_noise_map) == 0xB8 ? 1 : -1];
+typedef char plasma_fields_secondary_map_offset_assert[
+	offsetof(struct plasma_fields, secondary_noise_map) == 0x100 ? 1 : -1];
+
+/* a plasma's noise map's texture (loaded as the game's draws load it) */
+static void *plasma_noise_texture(long bitmap_group_index)
+{
+	struct bitmap_data *bitmap;
+
+	if (bitmap_group_index == NONE)
+		return NULL;
+	bitmap = bitmap_group_try_and_get_bitmap(bitmap_group_index, 0);
+	return bitmap ? _texture_cache_bitmap_get_hardware_format(bitmap, TRUE, TRUE) : NULL;
+}
+
+/* the shields' look on the unit's armour: its modifier shader (the Chief's
+characters\cyborg\shaders\shield hit), a plasma whose intensity is one
+of the unit's functions (the Chief's B, its 'shield glow source', from its
+recent shield damage), as rasterizer_xbox_plasma_energy.c draws it */
+static void visor_shield_look(struct unit_datum *unit, struct halo_vr_visor_state *state)
+{
+	struct object_definition *definition = object_definition_get(unit->definition_index);
+	struct shader *shader;
+	struct plasma_fields const *plasma;
+	short source;
+
+	if (definition->object.modifier_shader.index == NONE)
+		return;
+	shader = shader_definition_get(definition->object.modifier_shader.index);
+	if (shader->base.type != SHADER_TYPE_PLASMA)
+		return;
+	plasma = (struct plasma_fields const *)((byte const *)shader + sizeof(struct shader));
+	if (plasma->primary_period == 0.0f || plasma->secondary_period == 0.0f)
+		return;
+	state->noise_texture[0] = plasma_noise_texture(plasma->primary_noise_map);
+	state->noise_texture[1] = plasma_noise_texture(plasma->secondary_noise_map);
+	if (!state->noise_texture[0] || !state->noise_texture[1])
+		return;
+	state->look = TRUE;
+	source = plasma->intensity_exponent_source;
+	if (source >= 1 && source <= 4)
+	{
+		real value = unit->object.outgoing_function_values[source - 1];
+
+		state->glow = value > 0.0f ? (float)pow(value, plasma->intensity_exponent) * plasma->perpendicular_alpha : 0.0f;
+	}
+	state->perpendicular[0] = plasma->perpendicular_color.red;
+	state->perpendicular[1] = plasma->perpendicular_color.green;
+	state->perpendicular[2] = plasma->perpendicular_color.blue;
+	state->parallel[0] = plasma->parallel_color.red;
+	state->parallel[1] = plasma->parallel_color.green;
+	state->parallel[2] = plasma->parallel_color.blue;
+	state->noise_scale[0] = plasma->primary_scale;
+	state->noise_scale[1] = plasma->secondary_scale;
+	state->noise_period[0] = plasma->primary_period;
+	state->noise_period[1] = plasma->secondary_period;
+	state->noise_direction[0][0] = plasma->primary_direction.i;
+	state->noise_direction[0][1] = plasma->primary_direction.j;
+	state->noise_direction[0][2] = plasma->primary_direction.k;
+	state->noise_direction[1][0] = plasma->secondary_direction.i;
+	state->noise_direction[1][1] = plasma->secondary_direction.j;
+	state->noise_direction[1][2] = plasma->secondary_direction.k;
+	state->time = global_frame_parameters.game_time_sec;
+}
+
 /* the player as the visor shows it (port/linux/src/vr_visor.c): its unit's
-shields and health, as the HUD's meters have them, while it plays and the
-HUD is up */
+shields and health, as the HUD's meters have them, and their look on its
+armour, while it plays and the HUD is up */
 static void visor_state_tell(void)
 {
 	struct halo_vr_visor_state state;
@@ -615,6 +719,7 @@ static void visor_state_tell(void)
 		state.shield = unit->object.shield_vitality;
 		state.charging = TEST_FLAG(unit->object.damage_flags, _object_shield_charging_bit);
 		state.body = unit->object.body_vitality;
+		visor_shield_look(unit, &state);
 	}
 	halo_vr_visor_state(&state);
 }

@@ -673,6 +673,18 @@ static struct
 	BOOL eyes_drawn, hud_drawn;
 	/* the visor's image drawn this frame (vr_draw_visor), else 0 */
 	GLuint visor_image;
+	/* the HUD's groups (vr.h's HALO_VR_HUD_GROUP_*, halo_vr_hud_group): the
+	one drawn into, and whether the anchors choose it; while the HUD has
+	panels (vr_visor.c, vr.hud_depth), each group but the centre's is drawn
+	into a target of its own (vr_group_target), cleared as it is first
+	drawn in a frame, and copied into its panel's image at the present */
+	int hud_group, hud_group_mode;
+	BOOL hud_panels;
+	GLuint group_textures[HALO_VR_HUD_GROUPS];
+	unsigned long group_width, group_height;
+	unsigned int groups_drawn;
+	/* the panels' images drawn this frame, else 0 */
+	GLuint panel_images[VR_PANEL_COUNT];
 	/* row-major (vr.h), and the screen's points' (vr.h); the serial counts
 	their changes */
 	float eye_transforms[2][16];
@@ -1669,10 +1681,14 @@ nothing to draw into */
 static void vr_frame_resume(void);
 #endif
 
+#ifdef HALO_VR
+static GLuint vr_group_target(const struct render_target_entry *hud, int group);
+#endif
+
 static BOOL bind_targets(BOOL *has_depth)
 {
 	struct render_target_entry *color, *depth;
-	int samples;
+	GLuint color_texture;
 
 #ifdef HALO_VR
 	vr_frame_resume();
@@ -1689,6 +1705,7 @@ static BOOL bind_targets(BOOL *has_depth)
 		color->last_rendered = device.frame + 1;
 		color->target.written = ++render_target_write_serial;
 	}
+	color_texture = color ? color->target.texture : 0;
 	/* viewports and clears are in the targets' units (render_target_get) */
 	target_scale[0] = color ? color->target.scale[0] : depth->target.scale[0];
 	target_scale[1] = color ? color->target.scale[1] : depth->target.scale[1];
@@ -1706,42 +1723,15 @@ static BOOL bind_targets(BOOL *has_depth)
 	if (vr_gl.multiview || vr_gl.left_eye || vr_gl.right_eye)
 		vr_gl.eyes_drawn = TRUE;
 	if (vr_gl.pass == HALO_VR_PASS_HUD && color && color->target.data == device.back_buffer.Data)
+	{
 		vr_gl.hud_drawn = TRUE;
+		/* a group of the HUD's into its own target, for its panel */
+		if (vr_gl.hud_panels && vr_gl.hud_group > HALO_VR_HUD_GROUP_CENTRE)
+			color_texture = vr_group_target(color, vr_gl.hud_group);
+	}
 	target_height = color ? color->target.gl_height : depth->target.gl_height;
 #endif
-	/* with multisampling, multisampled where either is a screen buffer or
-	is multisampled already */
-	samples = anti_aliasing() == _anti_aliasing_msaa ? anti_aliasing_samples : 0;
-	if (samples && !((color && (color->screen_buffer || color->target.samples)) ||
-		(depth && (depth->screen_buffer || depth->target.samples))))
-	{
-		samples = 0;
-	}
-#ifdef HALO_VR
-	/* (not in the VR mode's passes: the eyes' targets have a layer for each
-	eye, and the HUD is a layer of its own) */
-	if (vr_gl.pass != HALO_VR_PASS_NONE)
-		samples = 0;
-#endif
-	if (color)
-		render_target_multisample(&color->target, samples);
-	if (depth)
-		render_target_multisample(&depth->target, samples);
-	if (samples)
-	{
-		state_framebuffer(framebuffer_find(color ? color->target.multisample : 0,
-			depth ? depth->target.multisample : 0, TRUE));
-		if (color)
-			color->target.unresolved = TRUE;
-		if (depth)
-			depth->target.unresolved = TRUE;
-		target_samples = samples;
-	}
-	else
-	{
-		state_framebuffer(framebuffer_get(color ? color->target.texture : 0, depth ? depth->target.texture : 0));
-		target_samples = 1;
-	}
+	state_framebuffer(framebuffer_get(color_texture, depth ? depth->target.texture : 0));
 #ifdef HALO_VR
 	framebuffer_views = 1;
 #endif
@@ -5453,6 +5443,16 @@ void halo_vr_pass(int pass)
 			hud->last_rendered = device.frame + 1;
 			vr_gl.hud_drawn = TRUE;
 		}
+		/* the HUD's groups at the frame's start: the centre's, and the
+		other groups' targets drawn into as they are first drawn
+		(vr_group_target) while the HUD has panels */
+		{
+			struct vr_visor_panel panels[VR_PANEL_COUNT];
+
+			vr_gl.hud_panels = vr_visor_panels(panels) != 0;
+			vr_gl.groups_drawn = 0;
+			halo_vr_hud_group(HALO_VR_HUD_GROUP_CENTRE);
+		}
 	}
 	xgpu_gl_state_invalidate();
 }
@@ -5537,11 +5537,23 @@ static void vr_write_screenshots(struct render_target_entry *hud, GLuint hud_ima
 				read_target(hud_image, -1, (unsigned long)vr_gl.hud_width, (unsigned long)vr_gl.hud_height) : NULL;
 			unsigned char *visor_pixels = layers.visor && vr_gl.visor_image ?
 				read_target(vr_gl.visor_image, -1, VR_VISOR_IMAGE_SIZE, VR_VISOR_IMAGE_SIZE) : NULL;
+			unsigned char *panel_pixels[VR_PANEL_COUNT];
+			int panel_width[VR_PANEL_COUNT], panel_height[VR_PANEL_COUNT], panel;
 
+			for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+			{
+				halo_vr_panel_size(panel, &panel_width[panel], &panel_height[panel]);
+				panel_pixels[panel] = layers.panels[panel].shown && vr_gl.panel_images[panel] ?
+					read_target(vr_gl.panel_images[panel], -1, (unsigned long)panel_width[panel],
+						(unsigned long)panel_height[panel]) : NULL;
+			}
 			eyes[0] = left;
 			eyes[1] = right;
 			vr_visor_composite(eyes, (int)width, (int)height, &layers, &head, hud_pixels, vr_gl.hud_width,
-				vr_gl.hud_height, visor_pixels, VR_VISOR_IMAGE_SIZE, VR_VISOR_IMAGE_SIZE);
+				vr_gl.hud_height, visor_pixels, VR_VISOR_IMAGE_SIZE, VR_VISOR_IMAGE_SIZE, panel_pixels, panel_width,
+				panel_height);
+			for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+				free(panel_pixels[panel]);
 			for (row = 0; row < height; row++)
 			{
 				memcpy(both + row * width * 8, left + row * width * 4, width * 4);
@@ -5580,6 +5592,86 @@ static void vr_write_screenshots(struct render_target_entry *hud, GLuint hud_ima
 	}
 }
 
+/* a vec3 as a vec4 uniform (the guest's GL has glUniform4fv) */
+static void vr_uniform3(GLint location, const float value[3])
+{
+	float v[4];
+
+	v[0] = value[0];
+	v[1] = value[1];
+	v[2] = value[2];
+	v[3] = 0.0f;
+	glUniform4fv(location, 1, v);
+}
+
+/* ---------- the HUD's groups (vr.h, vr_visor.c's panels) */
+
+void halo_vr_hud_group(int group)
+{
+	vr_gl.hud_group_mode = group;
+	if (group >= 0 && group < HALO_VR_HUD_GROUPS)
+		vr_gl.hud_group = group;
+	else
+		vr_gl.hud_group = HALO_VR_HUD_GROUP_CENTRE;
+}
+
+void halo_vr_hud_anchor(int corner)
+{
+	/* (hud_definitions.h's hud_anchor: top left, top right, bottom left,
+	bottom right, centre) */
+	static const int groups[5] =
+	{
+		HALO_VR_HUD_GROUP_WEAPON, HALO_VR_HUD_GROUP_STATUS, HALO_VR_HUD_GROUP_TRACKER, HALO_VR_HUD_GROUP_CENTRE,
+		HALO_VR_HUD_GROUP_CENTRE,
+	};
+
+	if (vr_gl.hud_group_mode == HALO_VR_HUD_BY_ANCHOR && corner >= 0 && corner < 5)
+		vr_gl.hud_group = groups[corner];
+}
+
+/* a group's target, as large as the HUD's, cleared as it is first drawn
+into in the frame */
+static GLuint vr_group_target(const struct render_target_entry *hud, int group)
+{
+	GLuint *texture = &vr_gl.group_textures[group];
+
+	if (vr_gl.group_width != hud->target.gl_width || vr_gl.group_height != hud->target.gl_height)
+	{
+		int index;
+
+		for (index = 0; index < HALO_VR_HUD_GROUPS; index++)
+		{
+			if (vr_gl.group_textures[index])
+				glDeleteTextures(1, &vr_gl.group_textures[index]);
+			vr_gl.group_textures[index] = 0;
+		}
+		vr_gl.group_width = hud->target.gl_width;
+		vr_gl.group_height = hud->target.gl_height;
+		vr_gl.groups_drawn = 0;
+	}
+	if (!*texture)
+	{
+		glGenTextures(1, texture);
+		glBindTexture(GL_TEXTURE_2D, *texture);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)vr_gl.group_width, (GLsizei)vr_gl.group_height, 0, GL_BGRA,
+			GL_UNSIGNED_BYTE, NULL);
+		xgpu_gl_state_invalidate();
+	}
+	if (!(vr_gl.groups_drawn & (1u << group)))
+	{
+		/* (transparent, as the HUD's: halo_vr_pass) */
+		glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_get(*texture, 0));
+		glDisable(GL_SCISSOR_TEST);
+		glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+		glClear(GL_COLOR_BUFFER_BIT);
+		xgpu_gl_state_invalidate();
+		vr_gl.groups_drawn |= 1u << group;
+	}
+	return *texture;
+}
+
 /* the HUD's (or the menus') target into its swapchain image, upside down
 for OpenXR's GL images. The game's draws leave the target's alpha as their
 scratch, not as coverage (the Xbox's display ignored it), and the layer
@@ -5589,15 +5681,19 @@ is then premultiplied, as the compositor's default blending expects).
 
 On the visor (vr_visor.c) the copy curves it about the eyes: each of the
 layer's pixels is a direction from the head, whose angles across and up are
-where it is in the HUD (a cylinder layer is in angles across already). The
-HUD's light glows about it on the glass (a soft ring of its own colour), and
-it flickers as the shields break. FALSE if the copy's program cannot be
-made. */
-static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
+where it is in the HUD (a cylinder layer is in angles across already). A
+panel's pixels are directions through its plane, which faces the head from
+where its region of the HUD is, tilted as it is; its region alone is shown.
+The HUD's light glows about it on the glass (a soft ring of its own
+colour), and it flickers as the shields break. FALSE if the copy's program
+cannot be made. */
+static BOOL vr_copy_hud_image(GLuint source, GLuint image, int width, int height,
+	const struct vr_visor_hud_image *look, const struct vr_visor_panel *panel)
 {
 	static GLuint program, sampler;
 	static BOOL failed;
 	static GLint size_location, curve_location, angles_location, extent_location, opacity_location, glow_location;
+	static GLint centre_location, right_location, up_location, region_location;
 	static const char vertex_source[] =
 		"#version 450 core\n"
 		"void main()\n"
@@ -5614,6 +5710,12 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 		"uniform vec2 extent;\n"
 		"uniform float opacity;\n"
 		"uniform float glow;\n"
+		/* (a quad's plane: its middle and axes from the head, at a unit's
+		distance, and the HUD's region it shows) */
+		"uniform vec4 centre;\n"
+		"uniform vec4 right_axis;\n"
+		"uniform vec4 up_axis;\n"
+		"uniform vec4 region;\n"
 		"out vec4 colour;\n"
 		"void main()\n"
 		"{\n"
@@ -5622,12 +5724,23 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 		"	vec2 uv = vec2(p.x, 1.0 - p.y);\n"
 		"	if (curve > 0.5)\n"
 		"	{\n"
-		/* the direction's angles across and up: from a quad's tangents, or
+		/* the direction's angles across and up: through a quad's plane, or
 		a cylinder's angle around and tangent up */
 		"		vec2 s = (p * 2.0 - 1.0) * extent;\n"
-		"		vec2 angles = curve < 1.5 ? vec2(atan(s.x), atan(s.y / sqrt(1.0 + s.x * s.x))) :\n"
-		"			vec2(s.x, atan(s.y));\n"
+		"		vec2 angles;\n"
+		"		if (curve > 1.5)\n"
+		"			angles = vec2(s.x, atan(s.y));\n"
+		"		else\n"
+		"		{\n"
+		"			vec3 d = normalize(centre.xyz + right_axis.xyz * s.x + up_axis.xyz * s.y);\n"
+		"			angles = vec2(atan(d.x, -d.z), atan(d.y, length(d.xz)));\n"
+		"		}\n"
 		"		uv = vec2(0.5, 0.5) + vec2(0.5, -0.5) * angles / half_angles;\n"
+		"		if (uv.x < region.x || uv.y < region.y || uv.x > region.z || uv.y > region.w)\n"
+		"		{\n"
+		"			colour = vec4(0.0);\n"
+		"			return;\n"
+		"		}\n"
 		"	}\n"
 		"	vec4 c = texture(hud_texture, uv);\n"
 		"	vec4 result = vec4(c.rgb, max(c.r, max(c.g, c.b)));\n"
@@ -5646,7 +5759,7 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 		"	}\n"
 		"	colour = result * opacity;\n"
 		"}\n";
-	struct vr_visor_hud_image look;
+	static const float none[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
 
 	if (failed)
 		return FALSE;
@@ -5676,6 +5789,10 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 		extent_location = glGetUniformLocation(program, "extent");
 		opacity_location = glGetUniformLocation(program, "opacity");
 		glow_location = glGetUniformLocation(program, "glow");
+		centre_location = glGetUniformLocation(program, "centre");
+		right_location = glGetUniformLocation(program, "right_axis");
+		up_location = glGetUniformLocation(program, "up_axis");
+		region_location = glGetUniformLocation(program, "region");
 		/* (nothing past the HUD's edges, where the curve and the glow reach) */
 		glGenSamplers(1, &sampler);
 		glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -5684,9 +5801,8 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 		glSamplerParameteri(sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
 		glSamplerParameterfv(sampler, GL_TEXTURE_BORDER_COLOR, transparent);
 	}
-	vr_visor_hud_image(&look);
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_get(image, 0));
-	glViewport(0, 0, vr_gl.hud_width, vr_gl.hud_height);
+	glViewport(0, 0, width, height);
 	glDisable(GL_SCISSOR_TEST);
 	glDisable(GL_BLEND);
 	glDisable(GL_CULL_FACE);
@@ -5695,14 +5811,32 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 	glDisable(GL_POLYGON_OFFSET_FILL);
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	glUseProgram(program);
-	glUniform2f(size_location, (GLfloat)vr_gl.hud_width, (GLfloat)vr_gl.hud_height);
-	glUniform1f(curve_location, (GLfloat)look.curve);
-	glUniform2f(angles_location, look.half_angles[0], look.half_angles[1]);
-	glUniform2f(extent_location, look.extent[0], look.extent[1]);
-	glUniform1f(opacity_location, look.opacity);
-	glUniform1f(glow_location, look.curve ? look.glow : 0.0f);
+	glUniform2f(size_location, (GLfloat)width, (GLfloat)height);
+	glUniform2f(angles_location, look->half_angles[0], look->half_angles[1]);
+	glUniform1f(opacity_location, look->opacity);
+	glUniform1f(glow_location, look->curve ? look->glow : 0.0f);
+	if (panel)
+	{
+		glUniform1f(curve_location, 1.0f);
+		glUniform2f(extent_location, panel->half_size[0], panel->half_size[1]);
+		vr_uniform3(centre_location, panel->centre);
+		vr_uniform3(right_location, panel->right);
+		vr_uniform3(up_location, panel->up);
+		glUniform4fv(region_location, 1, panel->region);
+	}
+	else
+	{
+		static const float ahead[3] = { 0.0f, 0.0f, -1.0f }, across[3] = { 1.0f, 0.0f, 0.0f }, up[3] = { 0.0f, 1.0f, 0.0f };
+
+		glUniform1f(curve_location, (GLfloat)look->curve);
+		glUniform2f(extent_location, look->extent[0], look->extent[1]);
+		vr_uniform3(centre_location, ahead);
+		vr_uniform3(right_location, across);
+		vr_uniform3(up_location, up);
+		glUniform4fv(region_location, 1, none);
+	}
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, hud->target.texture);
+	glBindTexture(GL_TEXTURE_2D, source);
 	glBindSampler(0, sampler);
 	glDrawArrays(GL_TRIANGLES, 0, 3);
 	glBindSampler(0, 0);
@@ -5710,17 +5844,56 @@ static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
 	return TRUE;
 }
 
-/* The visor's image (vr_visor.c): the helmet about the visor, darkening the
-edges of the view; the glass, a faint gold; and the shields' glows on the rim (their flare, their warning,
-their recharge rising up it). Drawn over the eyes' fields of view together
-(tangents from the middle of the head), its rim a rounded rectangle of
-their angles. The image is sRGB: its light is worked out linearly and
-written encoded, premultiplied (the glows' alpha 0: light added). */
+static BOOL vr_copy_hud(struct render_target_entry *hud, GLuint image)
+{
+	struct vr_visor_hud_image look;
+	struct vr_visor_panel panels[VR_PANEL_COUNT];
+	int panel;
+
+	vr_visor_hud_image(&look);
+	if (!vr_copy_hud_image(hud->target.texture, image, vr_gl.hud_width, vr_gl.hud_height, &look, NULL))
+		return FALSE;
+	/* the panels of the groups drawn */
+	if (vr_gl.hud_panels && vr_visor_panels(panels))
+	{
+		for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+		{
+			int group = panels[panel].group, width, height;
+			GLuint panel_image;
+
+			halo_vr_panel_size(panel, &width, &height);
+			if (!(vr_gl.groups_drawn & (1u << group)) || !vr_gl.group_textures[group] || width <= 0 ||
+				!(panel_image = halo_vr_image(VR_SWAPCHAIN_PANEL + panel)))
+			{
+				continue;
+			}
+			if (vr_copy_hud_image(vr_gl.group_textures[group], panel_image, width, height, &look, &panels[panel]))
+				vr_gl.panel_images[panel] = panel_image;
+		}
+	}
+	return TRUE;
+}
+
+/* The visor's glass (vr_visor.c): the helmet about the visor, darkening
+the edges of the view; the glass, a faint gold; the warning's glow on its
+rim; and the shields' energy across it, the game's own plasma
+(rasterizer_xbox_plasma_energy.c): its two noise maps moving through the
+glass as through the armour, combined as its pixel shader combines them
+(two lookups' differences, squared and sharpened into veins), coloured
+facing and grazing, as bright as the game's glow on the armour, and as the
+shields recharge, filling the glass to their level, flashing as they are
+full. Less in the middle of the glass than at its edges. Drawn over what
+the eyes see of the glass (tangents from the middle of the head), its rim a
+rounded rectangle of their angles. The image is sRGB: its light is worked
+out linearly and written encoded, premultiplied (the glows' alpha 0: light
+added). Other effects on the glass (water, dirt, cracks, reflections) would
+be drawn here too, over the glass's tint and under its energy. */
 static void vr_draw_visor(void)
 {
-	static GLuint program;
+	static GLuint program, sampler;
 	static BOOL failed;
-	static GLint size_location, extent_location, fov_location, rim_location, charge_location;
+	static GLint size_location, extent_location, fov_location, rim_location, plasma_location, level_location;
+	static GLint perpendicular_location, parallel_location, noise_location[2];
 	static const char vertex_source[] =
 		"#version 450 core\n"
 		"void main()\n"
@@ -5736,8 +5909,17 @@ static void vr_draw_visor(void)
 		"uniform vec4 fov;\n"
 		/* the glow on the rim (rgb) and the frame's strength (a) */
 		"uniform vec4 rim;\n"
-		/* the recharge's glow (rgb) and how far up the rim it is (a) */
-		"uniform vec4 charge;\n"
+		/* the plasma: the game's glow, the recharge, its level and the flash
+		as it is full; each noise map's scale, direction over its period
+		(xyz) and time (w) */
+		"uniform vec4 plasma;\n"
+		"uniform float level;\n"
+		"uniform vec4 perpendicular;\n"
+		"uniform vec4 parallel;\n"
+		"uniform vec4 noise[2];\n"
+		"uniform vec4 noise_scale;\n"
+		"uniform sampler3D noise0;\n"
+		"uniform sampler3D noise1;\n"
 		"out vec4 colour;\n"
 		"vec4 over(vec4 top, vec4 under) { return top + under * (1.0 - top.a); }\n"
 		"void main()\n"
@@ -5749,23 +5931,48 @@ static void vr_draw_visor(void)
 		/* (0 in the middle, 1 at the edge of the view: the visor's rounded
 		rim) */
 		"	float r = pow(pow(n.x, 4.0) + pow(n.y, 4.0), 0.25);\n"
-		"	float shade = smoothstep(0.80, 1.04, r);\n"
-		"	float height = 0.5 + 0.5 * (t.y > 0.0 ? n.y : -n.y);\n"
+		/* the helmet's shadow on the glass: from the brow and the chin (the
+		visor is wide and low), the sides' faint; never more where they
+		meet, so no corners are drawn */
+		"	float shade = max(t.y > 0.0 ? smoothstep(0.78, 1.06, n.y) : smoothstep(0.84, 1.06, n.y),\n"
+		"		0.5 * smoothstep(0.88, 1.06, n.x));\n"
 		"	vec4 light = vec4(vec3(0.85, 0.62, 0.25) * 0.035, 0.035) * rim.a * (1.0 - shade);\n"
-		"	light = over(vec4(vec3(0.010, 0.011, 0.013), 1.0) * 0.72 * shade * rim.a, light);\n"
-		/* the glows: about the rim, fading inward well before the HUD's
-		edges */
-		"	float glow = smoothstep(0.72, 1.0, r);\n"
-		"	light.rgb += rim.rgb * glow;\n"
-		"	if (charge.a >= 0.0)\n"
+		"	light = over(vec4(vec3(0.010, 0.011, 0.013), 1.0) * 0.45 * shade * rim.a, light);\n"
+		/* the warning's glow: about the rim, fading inward well before the
+		HUD's edges */
+		"	light.rgb += rim.rgb * smoothstep(0.80, 1.0, r);\n"
+		"	if (plasma.x + plasma.y + plasma.z > 0.0)\n"
 		"	{\n"
-		"		float band = exp(-pow((height - charge.a) / 0.05, 2.0));\n"
-		"		light.rgb += charge.rgb * glow * (band + 0.2 * step(height, charge.a));\n"
+		/* the noise maps move through the glass as through the armour: its
+		directions from the eyes, on a shell about the head */
+		"		vec3 d = normalize(vec3(t, -1.0)) * 0.25;\n"
+		"		vec4 t0 = texture(noise0, d * noise_scale.x + noise[0].xyz * noise[0].w);\n"
+		"		vec4 t1 = texture(noise1, d * noise_scale.y + noise[1].xyz * noise[1].w);\n"
+		/* the plasma's combiners (rasterizer_xbox_plasma_energy.c's
+		pixel shader, as nv2a_psh.c reads it) */
+		"		float x = clamp(t0.b + 0.5 - t1.b, -1.0, 1.0);\n"
+		"		float y = clamp(t1.a + 0.5 - t0.a, -1.0, 1.0);\n"
+		"		float e = clamp(4.0 * (x >= 0.5 ? max(y, 0.0) * max(y, 0.0) : max(x, 0.0) * max(x, 0.0)), -1.0, 1.0);\n"
+		"		float g = e >= 0.5 ? (2.0 * max(e, 0.0) - 1.0) * (2.0 * max(e, 0.0) - 1.0) : 0.0;\n"
+		/* (facing the eyes in the middle of the glass, more grazing at its
+		edges) */
+		"		vec3 tint = mix(parallel.rgb, perpendicular.rgb, 1.0 - 0.15 * r * r);\n"
+		"		vec3 energy = clamp((e * tint + 0.5 * g) * e * e, 0.0, 1.0);\n"
+		/* how much: the armour's glow, and the recharge filling the glass
+		from below to its level, brightest at its front; all of it more at
+		the edges than in the middle */
+		"		float height = 0.5 + 0.5 * (t.y > 0.0 ? n.y : -n.y);\n"
+		"		float fill = plasma.y * (0.5 * smoothstep(level + 0.05, level - 0.05, height) +\n"
+		"			0.7 * exp(-pow((height - level) / 0.07, 2.0)));\n"
+		"		float amount = clamp(plasma.x + fill + 0.3 * plasma.z, 0.0, 1.0) *\n"
+		"			mix(0.06, 1.0, smoothstep(0.45, 0.97, r)) * (1.0 - shade * 0.6);\n"
+		"		light.rgb += pow(energy * amount, vec3(2.2)) * 1.0;\n"
 		"	}\n"
 		"	colour = vec4(pow(clamp(light.rgb, 0.0, 1.0), vec3(1.0 / 2.2)), clamp(light.a, 0.0, 1.0));\n"
 		"}\n";
 	struct vr_visor_image look;
-	GLuint image;
+	GLuint image, noise_textures[2] = { 0, 0 };
+	int map;
 
 	vr_visor_image(&look);
 	if (failed || !look.shown || !(image = halo_vr_image(VR_SWAPCHAIN_VISOR)))
@@ -5788,11 +5995,41 @@ static void vr_draw_visor(void)
 			failed = TRUE;
 			return;
 		}
+		glUseProgram(program);
 		size_location = glGetUniformLocation(program, "size");
 		extent_location = glGetUniformLocation(program, "extent");
 		fov_location = glGetUniformLocation(program, "fov");
 		rim_location = glGetUniformLocation(program, "rim");
-		charge_location = glGetUniformLocation(program, "charge");
+		plasma_location = glGetUniformLocation(program, "plasma");
+		level_location = glGetUniformLocation(program, "level");
+		perpendicular_location = glGetUniformLocation(program, "perpendicular");
+		parallel_location = glGetUniformLocation(program, "parallel");
+		noise_location[0] = glGetUniformLocation(program, "noise");
+		noise_location[1] = glGetUniformLocation(program, "noise_scale");
+		glUniform1i(glGetUniformLocation(program, "noise0"), 0);
+		glUniform1i(glGetUniformLocation(program, "noise1"), 1);
+		/* (the noise repeats, as the plasma's draw wraps it) */
+		glGenSamplers(1, &sampler);
+		glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+		glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_REPEAT);
+		glSamplerParameteri(sampler, GL_TEXTURE_WRAP_T, GL_REPEAT);
+		glSamplerParameteri(sampler, GL_TEXTURE_WRAP_R, GL_REPEAT);
+	}
+	/* the plasma's noise maps, as the game's draws have them */
+	if (look.plasma)
+	{
+		for (map = 0; map < 2; map++)
+		{
+			struct xgpu_texture_description description;
+			GLenum target = 0;
+			GLuint texture = xgpu_texture_get((const DWORD *)look.noise_texture[map], NULL, &target, &description);
+
+			if (target == GL_TEXTURE_3D)
+				noise_textures[map] = texture;
+		}
+		if (!noise_textures[0] || !noise_textures[1])
+			look.plasma = 0;
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_get(image, 0));
 	glViewport(0, 0, VR_VISOR_IMAGE_SIZE, VR_VISOR_IMAGE_SIZE);
@@ -5808,21 +6045,233 @@ static void vr_draw_visor(void)
 	glUniform4fv(extent_location, 1, look.extent);
 	glUniform4fv(fov_location, 1, look.fov);
 	{
-		float rim[4], charge[4];
+		float rim[4], plasma[4] = { 0.0f, 0.0f, 0.0f, 0.0f }, noise[2][4], scale[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 		rim[0] = look.glow[0];
 		rim[1] = look.glow[1];
 		rim[2] = look.glow[2];
 		rim[3] = look.frame;
-		charge[0] = look.charge[0];
-		charge[1] = look.charge[1];
-		charge[2] = look.charge[2];
-		charge[3] = look.charge_level;
+		if (look.plasma)
+		{
+			plasma[0] = look.plasma_glow;
+			plasma[1] = look.charge;
+			plasma[2] = look.full;
+		}
+		for (map = 0; map < 2; map++)
+		{
+			/* (the game's: its time over the map's period, along its
+			direction; the fraction alone, as the noise repeats) */
+			float cycles = look.noise_period[map] > 0.0f ? look.time / look.noise_period[map] : 0.0f;
+
+			noise[map][0] = look.noise_direction[map][0];
+			noise[map][1] = look.noise_direction[map][1];
+			noise[map][2] = look.noise_direction[map][2];
+			noise[map][3] = cycles - floorf(cycles);
+			scale[map] = look.noise_scale[map];
+		}
 		glUniform4fv(rim_location, 1, rim);
-		glUniform4fv(charge_location, 1, charge);
+		glUniform4fv(plasma_location, 1, plasma);
+		glUniform1f(level_location, look.charge_level);
+		vr_uniform3(perpendicular_location, look.perpendicular);
+		vr_uniform3(parallel_location, look.parallel);
+		glUniform4fv(noise_location[0], 2, noise[0]);
+		glUniform4fv(noise_location[1], 1, scale);
+	}
+	for (map = 0; map < 2; map++)
+	{
+		glActiveTexture(GL_TEXTURE0 + map);
+		glBindTexture(GL_TEXTURE_3D, noise_textures[map]);
+		glBindSampler(map, sampler);
 	}
 	glDrawArrays(GL_TRIANGLES, 0, 3);
+	for (map = 0; map < 2; map++)
+	{
+		glActiveTexture(GL_TEXTURE0 + map);
+		glBindTexture(GL_TEXTURE_3D, 0);
+		glBindSampler(map, 0);
+	}
+	glActiveTexture(GL_TEXTURE0);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+/* The helmet's rim (vr_visor.c, vr.helmet_rim): the faceplate's frame about
+the visor, drawn into both eyes' images (multiview) where it is before the
+head: a band about the visor's opening, its lip at the edges of what the
+eyes see VR_RIM_DISTANCE before the head, a rounded rectangle, receding
+from it toward the face beyond the eyes' views. Its vertices are made here
+from their index (no buffers): rings about the opening (the lip fading in
+over a degree or so, the bevel, the frame beyond), each a loop of
+segments. Dark armour, lit faintly from above along the lip. Its depth is
+the nearest, for the compositor's reprojection, where it covers the
+world. */
+static void vr_draw_rim(void)
+{
+	enum { SEGMENTS = 128, RINGS = 4 };
+	static GLuint program;
+	static BOOL failed;
+	static GLint rows_location, fov_location, edges_location, strength_location, pass_location;
+	static const char vertex_source[] =
+		"#version 450 core\n"
+		"#extension GL_OVR_multiview2 : require\n"
+		"layout(num_views = 2) in;\n"
+		/* each eye's transform from the head (rows), its field of view
+		(tangents: left, right, up, down) */
+		"uniform vec4 rows[6];\n"
+		"uniform vec4 fov[2];\n"
+		/* the lip's edges VR_RIM_DISTANCE before the head (metres: left,
+		right, up, down) and that distance */
+		"uniform vec4 edges;\n"
+		"uniform float distance;\n"
+		"out vec2 around;\n"
+		"out float lip;\n"
+		"out float ring_alpha;\n"
+		"out float ring_shade;\n"
+		"out float presence;\n"
+		"const int SEGMENTS = 128;\n"
+		/* (the rings: out from the opening, toward the face) */
+		"const float out_by[4] = float[4](0.93, 0.975, 1.03, 1.7);\n"
+		"const float nearer[4] = float[4](1.0, 0.99, 0.9, 0.5);\n"
+		"const float alpha[4] = float[4](0.0, 0.5, 0.85, 0.85);\n"
+		"const float shading[4] = float[4](1.0, 1.0, 0.7, 0.4);\n"
+		"const ivec2 corners[6] = ivec2[6](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(0, 1), ivec2(1, 0), ivec2(1, 1));\n"
+		"void main()\n"
+		"{\n"
+		"	int band = gl_VertexID / (SEGMENTS * 6);\n"
+		"	int rest = gl_VertexID - band * SEGMENTS * 6;\n"
+		"	ivec2 corner = corners[rest % 6];\n"
+		"	int ring = band + corner.y;\n"
+		"	float angle = float(rest / 6 + corner.x) * 6.2831853 / float(SEGMENTS);\n"
+		"	vec2 c = vec2(cos(angle), sin(angle));\n"
+		/* (the visor's opening, wide and low: its brow and its chin a little
+		lower toward the temples) */
+		"	vec2 u = sign(c) * pow(abs(c), vec2(0.25));\n"
+		"	vec2 point = vec2(u.x * (u.x > 0.0 ? edges.y : -edges.x), u.y * (u.y > 0.0 ? edges.z : -edges.w) *\n"
+		"		(1.0 - 0.04 * u.x * u.x));\n"
+		/* the brow and the chin, the sides barely, the corners not at all */
+		"	presence = 0.85 * pow(abs(c.y), 4.0) + 0.2 * pow(abs(c.x), 8.0);\n"
+		"	vec3 v = vec3(point * out_by[ring], -distance) * nearer[ring];\n"
+		"	int eye = int(gl_ViewID_OVR);\n"
+		"	vec3 e = vec3(dot(rows[eye * 3], vec4(v, 1.0)), dot(rows[eye * 3 + 1], vec4(v, 1.0)),\n"
+		"		dot(rows[eye * 3 + 2], vec4(v, 1.0)));\n"
+		"	vec4 f = fov[eye];\n"
+		"	float w = max(-e.z, 1e-4);\n"
+		"	vec2 tangent = e.xy / w;\n"
+		"	vec2 ndc = vec2((2.0 * tangent.x - (f.y + f.x)) / (f.y - f.x), (2.0 * tangent.y - (f.z + f.w)) / (f.z - f.w));\n"
+		/* (the eye pass's clip space is upside down: its upper left origin) */
+		"	gl_Position = vec4(ndc.x * w, -ndc.y * w, 0.0, w);\n"
+		"	around = u;\n"
+		"	lip = ring == 1 ? 1.0 : 0.0;\n"
+		"	ring_alpha = alpha[ring];\n"
+		"	ring_shade = shading[ring];\n"
+		"}\n";
+	static const char fragment_source[] =
+		"#version 450 core\n"
+		"uniform float strength;\n"
+		"uniform float depth_pass;\n"
+		"in vec2 around;\n"
+		"in float lip;\n"
+		"in float ring_alpha;\n"
+		"in float ring_shade;\n"
+		"in float presence;\n"
+		"out vec4 colour;\n"
+		"void main()\n"
+		"{\n"
+		"	float a = ring_alpha * presence * strength;\n"
+		"	if (depth_pass > 0.5 && a < 0.5)\n"
+		"		discard;\n"
+		/* dark armour, olive in the dark; the lip catching the light from
+		above */
+		"	vec3 armour = vec3(0.050, 0.056, 0.044) * ring_shade;\n"
+		"	float facing = max(dot(normalize(around + vec2(0.0, 1e-4)), normalize(vec2(-0.35, 1.0))), 0.0);\n"
+		"	vec3 glint = vec3(0.62, 0.62, 0.58) * 0.14 * lip * lip * pow(facing, 3.0) * presence * strength;\n"
+		"	colour = vec4(armour * a + (depth_pass > 0.5 ? vec3(0.0) : glint), a);\n"
+		"}\n";
+	struct vr_visor_rim rim;
+	struct render_target_entry *depth = NULL;
+	int pass = vr_gl.pass, eye, row;
+	float scale[2], rows[6][4];
+
+	if (failed || !vr_gl.eyes_drawn || !vr_gl.eye_target.target.texture || !vr_visor_rim(&rim))
+		return;
+	if (!program)
+	{
+		GLuint vertex = xgpu_compile_shader(GL_VERTEX_SHADER, vertex_source, "VR rim vertex");
+		GLuint fragment = xgpu_compile_shader(GL_FRAGMENT_SHADER, fragment_source, "VR rim pixel");
+		GLint status = 0;
+
+		program = glCreateProgram();
+		glAttachShader(program, vertex);
+		glAttachShader(program, fragment);
+		glLinkProgram(program);
+		glGetProgramiv(program, GL_LINK_STATUS, &status);
+		if (!vertex || !fragment || !status)
+		{
+			platform_log("vr: cannot make the helmet's rim's program; no rim is drawn");
+			failed = TRUE;
+			return;
+		}
+		rows_location = glGetUniformLocation(program, "rows");
+		fov_location = glGetUniformLocation(program, "fov");
+		edges_location = glGetUniformLocation(program, "edges");
+		strength_location = glGetUniformLocation(program, "strength");
+		pass_location = glGetUniformLocation(program, "depth_pass");
+		glUseProgram(program);
+		glUniform1f(glGetUniformLocation(program, "distance"), VR_RIM_DISTANCE);
+	}
+	/* the eyes' depth (as vr_copy_depth finds it) */
+	scale[0] = screen_scale[0];
+	scale[1] = screen_scale[1];
+	vr_gl.pass = HALO_VR_PASS_EYES;
+	screen_scale[0] = vr_gl.eye_target.target.scale[0];
+	screen_scale[1] = vr_gl.eye_target.target.scale[1];
+	depth = render_target_get(&device.depth_buffer);
+	vr_gl.pass = pass;
+	screen_scale[0] = scale[0];
+	screen_scale[1] = scale[1];
+	if (depth && depth->target.layers != 2)
+		depth = NULL;
+	for (eye = 0; eye < 2; eye++)
+	{
+		for (row = 0; row < 3; row++)
+			memcpy(rows[eye * 3 + row], rim.eye[eye][row], sizeof(rows[0]));
+	}
+	framebuffer_views = 2;
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer_get(vr_gl.eye_target.target.texture, depth ? depth->target.texture : 0));
+	framebuffer_views = 1;
+	glViewport(0, 0, vr_gl.eye_width, vr_gl.eye_height);
+	glDisable(GL_SCISSOR_TEST);
+	glDisable(GL_CULL_FACE);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_POLYGON_OFFSET_FILL);
+	glDisable(GL_DEPTH_TEST);
+	glEnable(GL_BLEND);
+	glBlendEquation(GL_FUNC_ADD);
+	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
+	glUseProgram(program);
+	glUniform4fv(rows_location, 6, rows[0]);
+	glUniform4fv(fov_location, 2, rim.fov[0]);
+	glUniform4fv(edges_location, 1, rim.edges);
+	glUniform1f(strength_location, rim.strength);
+	glUniform1f(pass_location, 0.0f);
+	glDrawArrays(GL_TRIANGLES, 0, (RINGS - 1) * SEGMENTS * 6);
+	if (depth)
+	{
+		/* where it covers, its depth: the nearest */
+		glDisable(GL_BLEND);
+		glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+		glEnable(GL_DEPTH_TEST);
+		glDepthFunc(GL_ALWAYS);
+		glDepthMask(GL_TRUE);
+		glDepthRange(0.0, 1.0);
+		glUniform1f(pass_location, 1.0f);
+		glDrawArrays(GL_TRIANGLES, 0, (RINGS - 1) * SEGMENTS * 6);
+		glDisable(GL_DEPTH_TEST);
+	}
+	glDisable(GL_BLEND);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	xgpu_gl_state_invalidate();
 }
 
 /* the eyes' depth into its swapchain (XR_KHR_composition_layer_depth),
@@ -5925,7 +6374,10 @@ static void vr_present(BOOL screenshot)
 	GLuint hud_image = 0;
 
 	vr_timing(3);
+	/* the helmet's rim in the eyes, its depth with theirs */
+	vr_draw_rim();
 	vr_copy_depth();
+	memset(vr_gl.panel_images, 0, sizeof(vr_gl.panel_images));
 	if (vr_gl.hud_drawn)
 	{
 		int pass = vr_gl.pass;
@@ -5974,6 +6426,8 @@ static void vr_present(BOOL screenshot)
 		vr_write_screenshots(hud, hud_image);
 	vr_gl.eyes_drawn = FALSE;
 	vr_gl.hud_drawn = FALSE;
+	vr_gl.groups_drawn = 0;
+	halo_vr_hud_group(HALO_VR_HUD_GROUP_CENTRE);
 	vr_timing(0);
 }
 

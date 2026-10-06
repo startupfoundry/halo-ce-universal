@@ -107,6 +107,10 @@ symbols in this file:
 #include "cache_file_formats.h" /* port: port/linux/game/cache_file_formats.c */
 #include "custom_edition_cache.h"
 
+#ifdef HALO_VR
+#include "../../port/linux/src/vr.h"
+#endif
+
 /* ---------- constants */
 
 enum
@@ -1043,6 +1047,10 @@ void hud_calculate_point(
 		placement);
 
 	corner = absolute_placement->corner;
+#ifdef HALO_VR
+	/* port: the VR mode draws the HUD's corners at depths of their own */
+	halo_vr_hud_anchor(corner);
+#endif
 	if (corner < _hud_anchor_center)
 	{
 		point.x = placement->offset.x *

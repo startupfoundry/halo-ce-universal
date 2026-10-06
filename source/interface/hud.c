@@ -113,6 +113,9 @@ symbols in this file:
 #include "text/text_group.h"
 #include "units/unit_definitions.h"
 #include "units/units.h"
+#ifdef HALO_VR
+#include "../../port/linux/src/vr.h"
+#endif
 
 /* ---------- constants */
 
@@ -1400,6 +1403,11 @@ void hud_draw_screen(
 	{
 		struct player_datum *player = player_get(player_index);
 
+#ifdef HALO_VR
+		/* port: in VR, what the HUD places in the world is drawn at a depth
+		of its own (port/linux/src/vr_visor.c) */
+		halo_vr_hud_group(HALO_VR_HUD_GROUP_WORLD);
+#endif
 		if ((!game_engine_running() || game_engine_display_team_indicators()) &&
 			!cinematic_in_progress())
 		{
@@ -1409,6 +1417,9 @@ void hud_draw_screen(
 		/* port: players' names above their heads, in multiplayer and network co-op */
 		if ((game_engine_running() || network_coop_active()) && !cinematic_in_progress())
 			hud_draw_player_names();
+#ifdef HALO_VR
+		halo_vr_hud_group(HALO_VR_HUD_GROUP_CENTRE);
+#endif
 		/* port: who a dead network co-op player is watching */
 		if (player->unit_index == NONE && coop_spectating() && !cinematic_in_progress())
 			coop_spectate_draw(render.local_player_index);
@@ -1428,11 +1439,28 @@ void hud_draw_screen(
 				perspective != _director_perspective_scripted &&
 				player->unit_index != NONE)
 			{
+#ifdef HALO_VR
+				/* port: in VR, the interfaces' elements by their anchors, the
+				waypoints with the world */
+				halo_vr_hud_group(HALO_VR_HUD_BY_ANCHOR);
+#endif
 				hud_render_weapon_interface(player);
+#ifdef HALO_VR
+				halo_vr_hud_group(HALO_VR_HUD_GROUP_CENTRE);
+#endif
 				hud_show_action_response(player_index);
 				hud_play_unit_sounds(player, hud_scripted_globals->show_hud);
+#ifdef HALO_VR
+				halo_vr_hud_group(HALO_VR_HUD_BY_ANCHOR);
+#endif
 				hud_render_unit_interface(player);
+#ifdef HALO_VR
+				halo_vr_hud_group(HALO_VR_HUD_GROUP_WORLD);
+#endif
 				hud_render_nav_points(render.local_player_index);
+#ifdef HALO_VR
+				halo_vr_hud_group(HALO_VR_HUD_GROUP_CENTRE);
+#endif
 				hud_render_damage_indicators(render.local_player_index);
 			}
 			else
@@ -1446,6 +1474,9 @@ void hud_draw_screen(
 			hud_play_unit_sounds(player, FALSE);
 		}
 
+#ifdef HALO_VR
+		halo_vr_hud_group(HALO_VR_HUD_GROUP_CENTRE);
+#endif
 		hud_messaging_update(render.local_player_index);
 	}
 

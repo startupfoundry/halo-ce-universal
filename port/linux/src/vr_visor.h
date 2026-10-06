@@ -11,9 +11,9 @@ halo_vr_visor_state.
 
 #include "vr_host.h"
 
-/* the visor's image (vr_host.h's VR_SWAPCHAIN_VISOR): soft gradients, so
-small */
-#define VR_VISOR_IMAGE_SIZE 640
+/* the visor's glass (vr_host.h's VR_SWAPCHAIN_VISOR): soft gradients and
+the shields' energy across it */
+#define VR_VISOR_IMAGE_SIZE 1024
 
 /* how the HUD's layer shows the game's HUD image (d3d8_gl.c draws it so) */
 struct vr_visor_hud_image
@@ -30,35 +30,84 @@ struct vr_visor_hud_image
 	none) */
 	float opacity;
 	float glow;
+	/* the HUD's groups each in an image of their own, for the panels
+	(vr.hud_depth); else all in the HUD's */
+	int panels;
 };
 
-/* the visor's image: its rim and the glows on it (d3d8_gl.c draws it) */
+/* a panel of the HUD (vr.hud_depth): a group of its elements on a quad of
+its own at its own depth, curved in its image as the HUD's layer is (from
+the middle of the head, each pixel is a direction, whose angles across and
+up are where it is in the HUD) */
+struct vr_visor_panel
+{
+	int group; /* vr.h's HALO_VR_HUD_GROUP_* */
+	/* the HUD's region it shows (0 to 1 across, 0 to 1 down) */
+	float region[4];
+	/* its plane at a unit's distance from the middle of the head, in the
+	HUD's frame (x right, y up, -z ahead): its middle, its axes across and
+	up, and its half extents along them */
+	float centre[3], right[3], up[3];
+	float half_size[2];
+	/* metres from the middle of the head */
+	float distance;
+};
+
+/* the helmet's rim (vr.helmet_rim): the faceplate's frame about the visor,
+drawn in each eye where it is, before it (d3d8_gl.c): its strength (0
+none), its lip's edges on a plane VR_RIM_DISTANCE before the middle of the
+head (metres: left, right, up, down) and each eye's transform from the head
+(rows: x, y, z, with the translation as w) and field of view (tangents:
+left, right, up, down) */
+#define VR_RIM_DISTANCE 0.10f
+struct vr_visor_rim
+{
+	float strength;
+	float edges[4];
+	float eye[2][3][4];
+	float fov[2][4];
+};
+
+/* the visor's glass, VR_GLASS_DISTANCE before the middle of the head, just
+behind the rim's lip: the edges of the view darkened, its tint, the
+warning's glow on its rim, and the shields' energy across it (d3d8_gl.c
+draws it) */
+#define VR_GLASS_DISTANCE 0.105f
 struct vr_visor_image
 {
 	int shown;
-	/* the image's edges and the eyes' fields of view together, from the
-	middle of the head (tangents: left, right, up, down) */
+	/* the image's edges and what the eyes see of the glass, from the middle
+	of the head (tangents at the glass's distance: left, right, up, down) */
 	float extent[4];
 	float fov[4];
 	/* the frame about the visor (vr.visor_frame, 0 to 1) */
 	float frame;
-	/* the glow on the rim (linear, premultiplied: added to the view) */
+	/* the warning's glow on the rim (linear, premultiplied: added) */
 	float glow[3];
-	/* the shields' recharge rising up the rim: its glow, and how far up it
-	is (0 to 1; less than 0 none) */
-	float charge[3];
-	float charge_level;
+	/* the shields' energy: the game's plasma (vr_visor_state's look), as
+	bright as the armour's (glow), and as the shields recharge, filling the
+	glass from below to their level (charge, 0 to 1; charge_level, 0 to 1),
+	and its flash as they are full (0 to 1) */
+	int plasma;
+	float plasma_glow;
+	float charge, charge_level, full;
+	float perpendicular[3], parallel[3];
+	float noise_scale[2], noise_period[2], noise_direction[2][3];
+	void *noise_texture[2];
+	float time;
 };
 
 /* vr.hud = "visor" */
 int vr_visor_enabled(void);
+/* the panels' images' sizes (vr_host_info's, before the session) */
+void vr_visor_panel_sizes(int width[VR_PANEL_COUNT], int height[VR_PANEL_COUNT]);
 /* the runtime's: whether the HUD can be a cylinder layer */
 void vr_visor_initialize(const struct vr_host_info *info);
-/* once a frame, the head and the eyes' fields of view located for the
-frame's draws: the HUD's orientation follows the head (vr.hud_lag); the
+/* once a frame, the head, the eyes and their fields of view located for
+the frame's draws: the HUD's orientation follows the head (vr.hud_lag); the
 frame's seconds, and the HUD's distance (metres) and width (degrees) */
-void vr_visor_follow(const struct vr_host_pose *head, const float fov[2][4], float seconds, float distance,
-	float size);
+void vr_visor_follow(const struct vr_host_pose *head, const struct vr_host_pose eyes[2], const float fov[2][4],
+	float seconds, float distance, float size);
 /* the HUD's orientation (play space; the head's without a lag), and
 whether it follows the head (not locked to it) */
 int vr_visor_orientation(float orientation[4]);
@@ -70,13 +119,19 @@ visor is not there */
 void vr_visor_menus(int active);
 /* what the renderer draws for the frame */
 void vr_visor_hud_image(struct vr_visor_hud_image *image);
+/* the HUD's panels (VR_PANEL_COUNT; the n'th shows the group n + 1);
+0 if there are none (vr.hud_depth 0, the HUD not on the visor, the menus) */
+int vr_visor_panels(struct vr_visor_panel panels[VR_PANEL_COUNT]);
 void vr_visor_image(struct vr_visor_image *image);
+/* 0 if there is no rim to draw */
+int vr_visor_rim(struct vr_visor_rim *rim);
 /* debug.screenshot_every: the frame as the headset shows it, the layers
 over each eye's image (BGRA, rows from the bottom), from the layers as
 submitted; the HUD's and the visor's images as BGRA, rows from the bottom */
 void vr_visor_composite(unsigned char *eyes[2], int width, int height, const struct vr_host_layers *layers,
 	const struct vr_host_pose *head, const unsigned char *hud, int hud_width, int hud_height,
-	const unsigned char *visor, int visor_width, int visor_height);
+	const unsigned char *visor, int visor_width, int visor_height, unsigned char *const panels[VR_PANEL_COUNT],
+	const int panel_width[VR_PANEL_COUNT], const int panel_height[VR_PANEL_COUNT]);
 
 /* vr.c's: the layers of the frame presented last, and the head they were
 placed before; 0 if there is none */

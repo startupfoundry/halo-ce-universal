@@ -106,6 +106,32 @@ struct halo_vr_visor_state
 	float shield;
 	int charging;
 	float body;
+	/* the shields' look on the armour, from the unit's own modifier shader
+	(a plasma: characters\cyborg\shaders\shield hit for the Chief): its
+	glow now (0 to 1: the game's intensity for it, from the unit's function
+	that drives it, as the hits light it up), its colours facing and
+	grazing, and its two noise maps' scales, periods (seconds) and
+	directions, the noise map's texture (a D3DBaseTexture; NULL: none), and
+	the game's time (seconds) that moves them */
+	int look;
+	float glow;
+	float perpendicular[3], parallel[3];
+	float noise_scale[2], noise_period[2], noise_direction[2][3];
+	void *noise_texture[2];
+	float time;
+};
+
+/* the HUD's elements in groups, each drawn at its own depth on the visor
+(vr_visor.c): by where the game anchors them (hud_draw.c), and what it
+places in the world (the waypoints, the players' names) */
+enum
+{
+	HALO_VR_HUD_GROUP_CENTRE = 0, /* the crosshair, the messages, the rest */
+	HALO_VR_HUD_GROUP_WORLD,      /* the waypoints and the players over their heads */
+	HALO_VR_HUD_GROUP_WEAPON,     /* top left: the weapon, its ammunition, the grenades */
+	HALO_VR_HUD_GROUP_STATUS,     /* top right: the shields and the health */
+	HALO_VR_HUD_GROUP_TRACKER,    /* bottom left: the motion tracker */
+	HALO_VR_HUD_GROUPS,
 };
 
 /* the grenade thrown with the left hand (vr.grenade_throw = "gesture"):
@@ -183,12 +209,24 @@ void halo_vr_throw_done(void);
 
 /* the player, for the visor's effects (vr_visor.c) */
 void halo_vr_visor_state(const struct halo_vr_visor_state *state);
+/* the HUD's draws from now on are of this group (HALO_VR_HUD_GROUP_*), or
+(HALO_VR_HUD_BY_ANCHOR) of the group of the anchor of the element drawn
+(halo_vr_hud_anchor: hud_draw.c tells the hud_anchor of each element it
+places, 0 to 4). d3d8_gl.c draws each group into an image of its own, for
+the HUD's panels (vr_visor.c, vr.hud_depth); the frame starts with
+HALO_VR_HUD_GROUP_CENTRE */
+#define HALO_VR_HUD_BY_ANCHOR (-1)
+void halo_vr_hud_group(int group);
+void halo_vr_hud_anchor(int corner);
 
 /* the platform layer's (d3d8_gl.c, xinput_sdl.c) */
 /* opens the session once the GL context is current; 0 if VR cannot run */
 int halo_vr_initialize(void);
 void halo_vr_eye_size(int *width, int *height);
 void halo_vr_hud_size(int *width, int *height);
+/* a HUD panel's image (vr_host.h's VR_SWAPCHAIN_PANEL + panel); 0 by 0 if
+there is none */
+void halo_vr_panel_size(int panel, int *width, int *height);
 /* the swapchain's image for this frame (vr_host.h's VR_SWAPCHAIN_*), a GL
 texture: a 2-layer array for the eyes; 0 if there is none */
 unsigned int halo_vr_image(int swapchain);

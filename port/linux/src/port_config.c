@@ -273,10 +273,11 @@ static const struct config_setting config_settings[] =
 		"How large the world looks: more than 1 makes it larger (and your\n"
 		"movements and eyes smaller in it)." },
 	{ "vr.hud", _config_string, "\"visor\"", "HALO_VR_HUD", _environment_value, _platform_desktop,
-		"The HUD: \"visor\" on your helmet's visor, curved about your eyes, with\n"
-		"its glow, the visor's rim and the shields' effects on it (vr.hud_lag,\n"
-		"vr.hud_glow, vr.visor_frame, vr.visor_effects); \"flat\" a flat screen\n"
-		"before your eyes." },
+		"The HUD: \"visor\" on your helmet's visor, curved about your eyes, its\n"
+		"parts at depths of their own, with its glow, the helmet's rim and the\n"
+		"shields' effects on the glass (vr.hud_depth, vr.hud_lag, vr.hud_glow,\n"
+		"vr.helmet_rim, vr.visor_frame, vr.visor_effects); \"flat\" a flat\n"
+		"screen before your eyes." },
 	{ "vr.hud_distance", _config_real, "2.0", "HALO_VR_HUD_DISTANCE", _environment_value, _platform_desktop,
 		"How far in front of your eyes the HUD is, in metres." },
 	{ "vr.hud_size", _config_real, "60.0", "HALO_VR_HUD_SIZE", _environment_value, _platform_desktop,
@@ -284,15 +285,23 @@ static const struct config_setting config_settings[] =
 	{ "vr.hud_lag", _config_real, "0.03", "HALO_VR_HUD_LAG", _environment_value, _platform_desktop,
 		"With vr.hud = \"visor\", how far the HUD trails your head's turns, in\n"
 		"seconds (smoothed, never more than 1.5 degrees behind; 0 none, up to 0.2)." },
+	{ "vr.hud_depth", _config_real, "1.0", "HALO_VR_HUD_DEPTH", _environment_value, _platform_desktop,
+		"With vr.hud = \"visor\", how far apart in depth the HUD's parts are (0\n"
+		"all at vr.hud_distance, to 2): at 1, the motion tracker 0.55 m nearer\n"
+		"than the HUD and tilted back, the shields 0.35 m and the weapon 0.25 m\n"
+		"nearer, the waypoints 0.5 m farther (never nearer than 1 m)." },
 	{ "vr.hud_glow", _config_real, "0.5", "HALO_VR_HUD_GLOW", _environment_value, _platform_desktop,
 		"With vr.hud = \"visor\", the HUD's glow on the visor (0 none to 1)." },
-	{ "vr.visor_frame", _config_real, "0.6", "HALO_VR_VISOR_FRAME", _environment_value, _platform_desktop,
-		"With vr.hud = \"visor\", the helmet about the visor: the edges of your\n"
-		"view darkened, and the glass's faint tint (0 none to 1)." },
+	{ "vr.helmet_rim", _config_real, "0.0", "HALO_VR_HELMET_RIM", _environment_value, _platform_desktop,
+		"With vr.hud = \"visor\", the helmet's faceplate about the visor, at the\n"
+		"edges of your view, in depth (0 none, for now, to 1)." },
+	{ "vr.visor_frame", _config_real, "0.4", "HALO_VR_VISOR_FRAME", _environment_value, _platform_desktop,
+		"With vr.hud = \"visor\", the visor's glass: the edges of your view\n"
+		"darkened, and its faint tint (0 none to 1)." },
 	{ "vr.visor_effects", _config_boolean, "true", "HALO_VR_VISOR_EFFECTS", _environment_value, _platform_desktop,
-		"With vr.hud = \"visor\", the shields on the visor: its rim flares as they\n"
-		"are hit, pulses red while they are low, glows as they recharge, and the\n"
-		"HUD flickers as they break." },
+		"With vr.hud = \"visor\", the shields on the visor's glass: their energy\n"
+		"across it, the armour's own, as they are hit and as they recharge; its\n"
+		"rim pulses red while they are low, and the HUD flickers as they break." },
 	{ "vr.menu_distance", _config_real, "2.5", "HALO_VR_MENU_DISTANCE", _environment_value, _platform_desktop,
 		"How far in front of you the menus are, in metres." },
 	{ "vr.menu_width", _config_real, "2.6", "HALO_VR_MENU_WIDTH", _environment_value, _platform_desktop,
