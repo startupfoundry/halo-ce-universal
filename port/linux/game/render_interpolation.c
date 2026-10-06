@@ -145,6 +145,13 @@ struct interpolated_first_person
 static struct interpolated_object *interpolated_objects;
 static struct interpolated_camera interpolated_cameras[MAXIMUM_LOCAL_PLAYERS];
 static struct interpolated_first_person interpolated_first_person[MAXIMUM_LOCAL_PLAYERS];
+/* an object to be drawn from a place of this tick's choosing rather than
+from where it was the tick before (render_interpolation_object_from) */
+static struct
+{
+	long object_index;
+	real_point3d position;
+} interpolation_from = { NONE };
 static long interpolation_tick;
 static long interpolation_frame;
 static boolean interpolation_rendering;
@@ -391,7 +398,10 @@ void render_interpolation_tick(void)
 	long previous_tick = interpolation_tick++;
 
 	if (!halo_interpolation_enabled())
+	{
+		interpolation_from.object_index = NONE;
 		return;
+	}
 	/* the cameras' corrections a tick on, as the objects' (below) */
 	{
 		short local_player_index;
@@ -475,7 +485,39 @@ void render_interpolation_tick(void)
 		record->tick = interpolation_tick;
 		record->has_previous = continuing;
 		record->blended_frame = NONE;
+		if (iterator.index == interpolation_from.object_index)
+		{
+			/* the tick before's snapshot: this one's, moved to the place */
+			real_matrix4x3 const *latest = record->nodes + record->latest * record->node_capacity;
+			real_matrix4x3 *previous = record->nodes + (record->latest ^ 1) * record->node_capacity;
+			real_vector3d offset;
+			short node_index;
+
+			offset.i = interpolation_from.position.x - latest[0].position.x;
+			offset.j = interpolation_from.position.y - latest[0].position.y;
+			offset.k = interpolation_from.position.z - latest[0].position.z;
+			memcpy(previous, latest, node_count * sizeof(real_matrix4x3));
+			for (node_index = 0; node_index < node_count; node_index++)
+			{
+				previous[node_index].position.x += offset.i;
+				previous[node_index].position.y += offset.j;
+				previous[node_index].position.z += offset.k;
+			}
+			record->rotations_valid[record->latest ^ 1] = FALSE;
+			record->has_previous = TRUE;
+		}
 	}
+	interpolation_from.object_index = NONE;
+}
+
+/* the object, put somewhere this tick, drawn from there to where the tick
+leaves it, not from where it was the tick before: the VR mode's grenade let
+go of from where the hand held it (port/linux/game/vr_grenade.c), not from
+the hand of the player's body it hung from */
+void render_interpolation_object_from(long object_index, real_point3d const *position)
+{
+	interpolation_from.object_index = object_index;
+	interpolation_from.position = *position;
 }
 
 /* a new map (game.c): its objects take the indices of the last one's, and
