@@ -622,6 +622,16 @@ static void director_choose_game_perspective(
 	short following;
 	long unit_index;
 	struct director *director = director_get(local_player_index);
+#ifdef HALO_VR
+	/* port: in the VR mode the first player's view is cut between the
+	first-person camera and the one following a vehicle, not flown between
+	them for a second: port/linux/game/vr_seat.c blinks through the cut,
+	and the view from a seat is the seat's own */
+	extern int halo_vr_aiming(void);
+	boolean cut = local_player_index == 0 && halo_vr_aiming();
+#else
+	boolean cut = FALSE;
+#endif
 
 	unit_index = player_control_get_unit_index(local_player_index);
 	following = director_desired_perspective(unit_index, &perspective);
@@ -635,7 +645,7 @@ static void director_choose_game_perspective(
 				director_set_camera(
 					local_player_index,
 					(director_camera_update_proc)following_camera_update,
-					!force);
+					!force && !cut);
 			}
 		}
 		else if (force || director->camera_proc == (director_camera_update_proc)following_camera_update)
@@ -644,7 +654,7 @@ static void director_choose_game_perspective(
 			director_set_camera(
 				local_player_index,
 				(director_camera_update_proc)first_person_camera_update,
-				!force);
+				!force && !cut);
 		}
 
 		director->seat_state = perspective;
