@@ -1021,7 +1021,7 @@ short buzz says you hold one; only with a grenade to throw, on foot), draw
 the hand back (beside your head, or low for a lob), swing it forward and
 open the hand. The grenade leaves from your hand as you let go, along the
 way the hand was going (lifted 8 degrees), as hard as you threw it: a
-throw of 5 m/s or faster throws as far as the left trigger does, slower
+throw of 4 m/s or faster throws as far as the left trigger does, slower
 ones shorter (to 30% of it), never farther. The left trigger still throws
 as ever, and the right bumper switches the grenade. From the moment you
 take it until it flies, the grenade (frag or plasma, the one selected) is
@@ -1029,7 +1029,7 @@ in your left hand, whatever `vr.hands` is, and it leaves from just where
 you held it.
 
 - What counts as a swing: the hand moving forward (the way your head
-  faces) faster than 2 m/s, with the grip held for 0.1 s at least, from
+  faces) faster than 1.6 m/s, with the grip held for 0.1 s at least, from
   no farther than 15 cm ahead of your eyes since you took it. A hand held
   out (on a foregrip, reaching) and pushed forward is no throw; nor is the
   grip let go of before a swing.
