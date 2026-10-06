@@ -22,8 +22,11 @@ enum
 	VR_SWAPCHAIN_EYES = 0, /* a 2-layer texture array: layer 0 the left eye */
 	VR_SWAPCHAIN_HUD,      /* the HUD and the menus, a quad (or cylinder) layer */
 	VR_SWAPCHAIN_DEPTH,    /* the eyes' depth (XR_KHR_composition_layer_depth), 2 layers */
-	VR_SWAPCHAIN_VISOR,    /* the helmet's visor: its rim and its glows, a quad layer */
-	VR_SWAPCHAIN_COUNT,
+	VR_SWAPCHAIN_VISOR,    /* the helmet's visor glass: its edges and its glows, a quad layer */
+	/* the HUD's panels at their own depths (vr_visor.c), a quad layer each */
+	VR_SWAPCHAIN_PANEL,
+	VR_SWAPCHAIN_COUNT = VR_SWAPCHAIN_PANEL + 4,
+	VR_PANEL_COUNT = 4,
 	VR_SWAPCHAIN_IMAGES = 4,
 };
 
@@ -56,6 +59,9 @@ struct vr_host_info
 	int hud_width, hud_height;
 	/* in: the visor's image (0: none); out: 0 if it could not be made */
 	int visor_width, visor_height;
+	/* in: the HUD's panels' images (0: none); out: 0 where one could not be
+	made */
+	int panel_width[VR_PANEL_COUNT], panel_height[VR_PANEL_COUNT];
 	int standing;
 	float refresh_rate_wanted; /* 0: the runtime's choice */
 	int depth; /* in: submit the eyes' depth; out: the runtime takes it */
@@ -122,7 +128,17 @@ struct vr_host_layers
 	float hud_size[2];
 	int hud_cylinder;
 	float hud_radius, hud_angle;
-	/* the visor's image on a quad before the head, under the HUD's */
+	/* the HUD's panels (VR_SWAPCHAIN_PANEL on), each a quad at its own
+	depth, placed as the HUD's layer is (hud_head_locked): those not
+	over_hud under the HUD's layer, the others over it */
+	struct
+	{
+		int shown;
+		int over_hud;
+		struct vr_host_pose pose;
+		float size[2];
+	} panels[VR_PANEL_COUNT];
+	/* the visor's glass on a quad before the head, over everything else */
 	int visor;
 	struct vr_host_pose visor_pose;
 	float visor_size[2];

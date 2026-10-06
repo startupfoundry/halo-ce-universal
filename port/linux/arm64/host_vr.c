@@ -743,6 +743,19 @@ int host_vr_initialize(struct vr_host_info *info)
 	{
 		info->visor_width = info->visor_height = 0;
 	}
+	{
+		int panel;
+
+		for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+		{
+			if (info->panel_width[panel] > 0 && info->panel_height[panel] > 0 &&
+				!swapchain_create(VR_SWAPCHAIN_PANEL + panel, info->panel_width[panel], info->panel_height[panel], 1,
+					info))
+			{
+				info->panel_width[panel] = info->panel_height[panel] = 0;
+			}
+		}
+	}
 	info->cylinder = vr.has_cylinder;
 
 	space.poseInReferenceSpace.orientation.w = 1.0f;
@@ -777,9 +790,10 @@ int host_vr_initialize(struct vr_host_info *info)
 		if (current)
 			current(vr.session, &info->refresh_rate);
 	}
-	host_logf(HOST_LOG_INFO, "vr: %s, eyes %dx%d (recommended %dx%d), HUD %dx%d, visor %dx%d, %s space%s",
+	host_logf(HOST_LOG_INFO, "vr: %s, eyes %dx%d (recommended %dx%d), HUD %dx%d, visor %dx%d, %d HUD panels, %s space%s",
 		info->system_name, info->eye_width, info->eye_height, info->recommended_width, info->recommended_height,
 		info->hud_width, info->hud_height, info->visor_width, info->visor_height,
+		(info->panel_width[0] > 0) + (info->panel_width[1] > 0) + (info->panel_width[2] > 0) + (info->panel_width[3] > 0),
 		space.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_STAGE ? "stage" : "local",
 		vr.has_cylinder ? ", cylinder layers" : "");
 	return 1;
@@ -1044,6 +1058,31 @@ static void pose_to_xr(const struct vr_host_pose *pose, XrPosef *xr)
 	xr->orientation.w = pose->orientation[3];
 }
 
+/* a HUD panel's quad, if it is shown and over (or under) the HUD's layer */
+static void panel_layer(const struct vr_host_layers *layers, int panel, int over_hud, XrCompositionLayerQuad *quad,
+	const XrCompositionLayerBaseHeader **submitted, uint32_t *count)
+{
+	int swapchain = VR_SWAPCHAIN_PANEL + panel;
+
+	if (!layers || !layers->hud || !layers->panels[panel].shown || !layers->panels[panel].over_hud != !over_hud ||
+		!vr.swapchains[swapchain])
+	{
+		return;
+	}
+	memset(quad, 0, sizeof(*quad));
+	quad->type = XR_TYPE_COMPOSITION_LAYER_QUAD;
+	quad->layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+	quad->space = layers->hud_head_locked ? vr.view_space : vr.play_space;
+	quad->eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+	quad->subImage.swapchain = vr.swapchains[swapchain];
+	quad->subImage.imageRect.extent.width = vr.swapchain_width[swapchain];
+	quad->subImage.imageRect.extent.height = vr.swapchain_height[swapchain];
+	pose_to_xr(&layers->panels[panel].pose, &quad->pose);
+	quad->size.width = layers->panels[panel].size[0];
+	quad->size.height = layers->panels[panel].size[1];
+	submitted[(*count)++] = (const XrCompositionLayerBaseHeader *)quad;
+}
+
 void host_vr_frame_end(const struct vr_host_layers *layers)
 {
 	XrFrameEndInfo end = { XR_TYPE_FRAME_END_INFO };
@@ -1053,9 +1092,10 @@ void host_vr_frame_end(const struct vr_host_layers *layers)
 	XrCompositionLayerQuad quad = { XR_TYPE_COMPOSITION_LAYER_QUAD };
 	XrCompositionLayerQuad visor = { XR_TYPE_COMPOSITION_LAYER_QUAD };
 	XrCompositionLayerCylinderKHR cylinder = { XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR };
-	const XrCompositionLayerBaseHeader *submitted[3];
+	XrCompositionLayerQuad panels[VR_PANEL_COUNT];
+	const XrCompositionLayerBaseHeader *submitted[4 + VR_PANEL_COUNT];
 	uint32_t count = 0;
-	int eye;
+	int eye, panel;
 
 	if (!vr.frame_begun)
 		return;
@@ -1065,6 +1105,8 @@ void host_vr_frame_end(const struct vr_host_layers *layers)
 	host_vr_release(VR_SWAPCHAIN_HUD);
 	host_vr_release(VR_SWAPCHAIN_DEPTH);
 	host_vr_release(VR_SWAPCHAIN_VISOR);
+	for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+		host_vr_release(VR_SWAPCHAIN_PANEL + panel);
 	if (timing.enabled > 0)
 		timing.release += seconds_now();
 	if (layers && layers->projection)
@@ -1101,21 +1143,10 @@ void host_vr_frame_end(const struct vr_host_layers *layers)
 		projection.views = views;
 		submitted[count++] = (const XrCompositionLayerBaseHeader *)&projection;
 	}
-	if (layers && layers->visor && vr.swapchains[VR_SWAPCHAIN_VISOR])
-	{
-		/* the visor's rim, under the HUD: premultiplied, as the HUD is (the
-		image last released, where none was drawn this frame) */
-		visor.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-		visor.space = vr.view_space;
-		visor.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-		visor.subImage.swapchain = vr.swapchains[VR_SWAPCHAIN_VISOR];
-		visor.subImage.imageRect.extent.width = vr.swapchain_width[VR_SWAPCHAIN_VISOR];
-		visor.subImage.imageRect.extent.height = vr.swapchain_height[VR_SWAPCHAIN_VISOR];
-		pose_to_xr(&layers->visor_pose, &visor.pose);
-		visor.size.width = layers->visor_size[0];
-		visor.size.height = layers->visor_size[1];
-		submitted[count++] = (const XrCompositionLayerBaseHeader *)&visor;
-	}
+	/* the HUD's panels behind its layer (farther), then the layer, then
+	those before it, then the visor's glass over all */
+	for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+		panel_layer(layers, panel, 0, &panels[panel], submitted, &count);
 	if (layers && layers->hud && layers->hud_cylinder && vr.has_cylinder)
 	{
 		/* (as the quad below) */
@@ -1147,6 +1178,22 @@ void host_vr_frame_end(const struct vr_host_layers *layers)
 		quad.size.width = layers->hud_size[0];
 		quad.size.height = layers->hud_size[1];
 		submitted[count++] = (const XrCompositionLayerBaseHeader *)&quad;
+	}
+	for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+		panel_layer(layers, panel, 1, &panels[panel], submitted, &count);
+	if (layers && layers->visor && vr.swapchains[VR_SWAPCHAIN_VISOR])
+	{
+		/* the visor's glass, over the HUD: premultiplied, as the HUD is */
+		visor.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+		visor.space = vr.view_space;
+		visor.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+		visor.subImage.swapchain = vr.swapchains[VR_SWAPCHAIN_VISOR];
+		visor.subImage.imageRect.extent.width = vr.swapchain_width[VR_SWAPCHAIN_VISOR];
+		visor.subImage.imageRect.extent.height = vr.swapchain_height[VR_SWAPCHAIN_VISOR];
+		pose_to_xr(&layers->visor_pose, &visor.pose);
+		visor.size.width = layers->visor_size[0];
+		visor.size.height = layers->visor_size[1];
+		submitted[count++] = (const XrCompositionLayerBaseHeader *)&visor;
 	}
 	end.displayTime = vr.frame.predictedDisplayTime;
 	end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
