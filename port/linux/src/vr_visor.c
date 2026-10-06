@@ -23,14 +23,39 @@ smoothed, never more than FOLLOW_LIMIT behind, and never past it (no
 spring, no overshoot), so that it is still while the head is. The visor's
 rim does not lag: it is the helmet, and turns with the head exactly.
 
-The visor (vr.visor_frame, its own layer under the HUD's): the helmet
-darkening the edges of the view, and the glass a faint gold (no line where
-the visor ends: a line fixed in the view reads as a smudge on the lenses).
-And the shields on it (vr.visor_effects), from the
-player's unit as the game has it (halo_vr_visor_state): the rim flares
-as the shields are hit, pulses red while they are low or gone, the
-recharge rises up the rim as they fill, and the HUD flickers as they break
-and comes up as the player takes control.
+The HUD's elements have depths of their own (vr.hud_depth), as a helmet's
+projection would give them, not one surface: each group of them (vr.h's
+HALO_VR_HUD_GROUP_*, by where the game anchors them: hud_draw.c, hud.c) is
+drawn into an image of its own (d3d8_gl.c) and shown on a panel of its own,
+a quad layer at its own distance, curved in its image as the HUD is, so
+that each element is where it was in the HUD seen from the middle of the
+head, only nearer or farther: the motion tracker nearest, tilted back as a
+console is, the shields and the weapon's panels before the HUD's middle,
+the waypoints and the players' names beyond it, toward the world they mark.
+Every panel is placed with the HUD's layer, a moment behind the head. Quad
+layers, which every runtime has (SteamVR on the Steam Frame has no
+cylinders): the compositor gives each its stereo depth, and the HUD's
+pixels are not drawn into the eyes' images, whose depth is the world's.
+
+The helmet (vr.helmet_rim): the faceplate's frame about the visor, a mesh
+drawn into each eye's image (d3d8_gl.c, vr_draw_rim), before the eyes as a
+helmet is, where only the edges of each eye's view see it: the left eye its
+left side, the right eye its right, both its brow and its chin. It does not
+lag: it is the helmet, and turns with the head exactly.
+
+The visor's glass (vr.visor_frame, a layer just within the rim, over the
+HUD's): the edges of the view darkened, and the glass a faint gold (no line
+where the visor ends: a line fixed in the view reads as a smudge on the
+lenses). And the shields on it (vr.visor_effects), from the player's unit
+as the game has it (halo_vr_visor_state): their energy across the glass,
+the game's own (the unit's modifier shader, the plasma the armour glows
+with as the shields are hit: its colours, its noise maps and their motion),
+as bright as the armour's, and as they recharge, rising across the glass to
+their level, flashing as they are full; the glass's rim pulses red while
+they are low or gone, and the HUD flickers as they break and comes up as
+the player takes control. More at the glass's edges than its middle, so
+that nothing is hidden. Other effects on the glass (water, dirt, cracks,
+reflections) would be drawn with it (d3d8_gl.c, vr_draw_visor).
 */
 
 #ifdef HALO_VR
@@ -45,18 +70,21 @@ and comes up as the player takes control.
 
 /* the HUD's turn behind the head's (vr.hud_lag), at most (radians) */
 #define FOLLOW_LIMIT (1.5f * (float)M_PI / 180.0f)
-/* the visor's image is this far before the eyes (metres), as wide as the
-eyes' fields of view together, and this much more (tangents: the eyes are
-beside the middle of the head) */
-#define VISOR_DISTANCE 1.0f
-#define VISOR_MARGIN 0.08f
+/* the visor's image, as wide as the eyes see of the glass, and this much
+more (tangents) */
+#define VISOR_MARGIN 0.04f
+/* the HUD's image's pixels across (vr.c's), for the panels' */
+#define HUD_PIXELS_ACROSS 1280.0f
+/* the panels' distances: never nearer (metres) */
+#define PANEL_NEAREST 1.0f
+/* the rim's lip begins this far out to the edges of the eyes' view on its
+plane (d3d8_gl.c's first ring, vr_draw_rim) */
+#define RIM_CLEAR 0.93f
 /* the HUD's height for its width (the 640x480 screen) */
 #define HUD_ASPECT 0.75f
-/* the shields' effects: the flare as they are hit, the flash as they are
-full again, and the body's (red) as it is hurt, each fading over this time
-constant (seconds); the low shields' warning pulse (a second); the flicker
+/* the shields' effects: the flash as they are full again, and the body's
+(red) as it is hurt, each fading over this time constant (seconds); the low shields' warning pulse (a second); the flicker
 as they break, and the HUD coming up as the player takes control (seconds) */
-#define HIT_FADE 0.18f
 #define FULL_FADE 0.35f
 #define WOUND_FADE 0.30f
 #define WARNING_PULSE 1.6f
@@ -76,17 +104,43 @@ static struct
 	float frame;
 	int effects;
 	float glow;
+	float depth;
+	float rim;
 } settings = { (unsigned long)-1 };
+
+/* the HUD's panels: the group each shows, the HUD's region it is in (0 to
+1, across and down), its distance from the HUD's (a fraction of it, times
+vr.hud_depth: before it less than 0) and its tilt back (radians, times
+vr.hud_depth). The regions are the anchors' corners of the game's 640x480
+HUD, where hud_draw.c places their elements, with room to spare. */
+static const struct
+{
+	int group;
+	float region[4];
+	float depth;
+	float tilt;
+} panel_layout[VR_PANEL_COUNT] =
+{
+	{ HALO_VR_HUD_GROUP_WORLD, { 0.0f, 0.0f, 1.0f, 1.0f }, 0.25f, 0.0f },
+	{ HALO_VR_HUD_GROUP_WEAPON, { 0.0f, 0.0f, 0.5f, 0.45f }, -0.125f, 0.0f },
+	{ HALO_VR_HUD_GROUP_STATUS, { 0.5f, 0.0f, 1.0f, 0.45f }, -0.175f, 0.0f },
+	{ HALO_VR_HUD_GROUP_TRACKER, { 0.0f, 0.5f, 0.45f, 1.0f }, -0.275f, 0.35f },
+};
 
 static struct
 {
 	int cylinder;
 	int logged;
+	int rim_logged;
 	int menus;
 	/* the frame's head and eyes' fields of view, its seconds, and the HUD's
 	distance and half angles (radians) */
 	struct vr_host_pose head;
 	float fov[2][4];
+	/* the eyes from the middle of the head (in its frame), when known */
+	float eye_position[2][3];
+	float eye_orientation[2][4];
+	int eyes_known;
 	float seconds;
 	float distance;
 	float half_angles[2];
@@ -102,11 +156,13 @@ static struct
 	the warning and the recharge (0 to 1), the warning's pulse (seconds),
 	the flicker's and the HUD's coming up (seconds from their start) */
 	float presence;
-	float hit, full, wound;
+	float full, wound;
 	float warning, charge;
 	float pulse;
 	float flicker;
 	float boot;
+	/* the shields' look on the armour (halo_vr_visor_state) */
+	struct halo_vr_visor_state look;
 } visor;
 
 static float clamp(float value, float low, float high)
@@ -124,6 +180,8 @@ static void settings_read(void)
 	settings.frame = clamp((float)config_real("vr.visor_frame"), 0.0f, 1.0f);
 	settings.effects = config_boolean("vr.visor_effects");
 	settings.glow = clamp((float)config_real("vr.hud_glow"), 0.0f, 1.0f);
+	settings.depth = clamp((float)config_real("vr.hud_depth"), 0.0f, 2.0f);
+	settings.rim = clamp((float)config_real("vr.helmet_rim"), 0.0f, 1.0f);
 }
 
 int vr_visor_enabled(void)
@@ -208,12 +266,33 @@ static void quaternion_towards(float q[4], const float target[4], float t)
 
 /* ---------- the HUD following the head */
 
-void vr_visor_follow(const struct vr_host_pose *head, const float fov[2][4], float seconds, float distance,
-	float size)
+void vr_visor_follow(const struct vr_host_pose *head, const struct vr_host_pose eyes[2], const float fov[2][4],
+	float seconds, float distance, float size)
 {
 	settings_read();
 	visor.head = *head;
 	memcpy(visor.fov, fov, sizeof(visor.fov));
+	visor.eyes_known = head->valid && eyes[0].valid && eyes[1].valid;
+	if (visor.eyes_known)
+	{
+		float inverse[4];
+		int eye, axis;
+
+		inverse[0] = -head->orientation[0];
+		inverse[1] = -head->orientation[1];
+		inverse[2] = -head->orientation[2];
+		inverse[3] = head->orientation[3];
+		/* the eyes in the head's frame */
+		for (eye = 0; eye < 2; eye++)
+		{
+			float offset[3];
+
+			for (axis = 0; axis < 3; axis++)
+				offset[axis] = eyes[eye].position[axis] - head->position[axis];
+			quaternion_rotate(inverse, offset, visor.eye_position[eye]);
+			quaternion_multiply(inverse, eyes[eye].orientation, visor.eye_orientation[eye]);
+		}
+	}
 	visor.seconds = clamp(seconds, 0.0f, 0.1f);
 	visor.distance = distance;
 	/* (a quad's tangents grow without bound toward 90 degrees) */
@@ -251,18 +330,236 @@ int vr_visor_orientation(float orientation[4])
 	return settings.lag > 0.0f;
 }
 
-/* the eyes' fields of view together, and the visor's image's edges about
-them (tangents: left, right, up, down) */
+/* what the eyes see of a plane before the head (distance metres along its
+-z): the edges of their views on it together (metres in the head's frame:
+left, right, up, down). Near the eyes, each side is one eye's: the left
+eye's left edge, the right eye's right. */
+static void footprint(float distance, float edges[4])
+{
+	int eye, edge;
+
+	if (!visor.eyes_known)
+	{
+		/* (the eyes beside the middle of the head, as they nearly are) */
+		edges[0] = (visor.fov[0][0] < visor.fov[1][0] ? visor.fov[0][0] : visor.fov[1][0]) * distance - 0.032f;
+		edges[1] = (visor.fov[0][1] > visor.fov[1][1] ? visor.fov[0][1] : visor.fov[1][1]) * distance + 0.032f;
+		edges[2] = (visor.fov[0][2] > visor.fov[1][2] ? visor.fov[0][2] : visor.fov[1][2]) * distance;
+		edges[3] = (visor.fov[0][3] < visor.fov[1][3] ? visor.fov[0][3] : visor.fov[1][3]) * distance;
+		return;
+	}
+	edges[0] = edges[3] = 1e9f;
+	edges[1] = edges[2] = -1e9f;
+	for (eye = 0; eye < 2; eye++)
+	{
+		for (edge = 0; edge < 4; edge++)
+		{
+			const float *origin = visor.eye_position[eye];
+			float local[3], direction[3], t, x, y;
+
+			/* the middle of each edge of the eye's view */
+			local[0] = edge < 2 ? visor.fov[eye][edge] : 0.0f;
+			local[1] = edge >= 2 ? visor.fov[eye][edge] : 0.0f;
+			local[2] = -1.0f;
+			quaternion_rotate(visor.eye_orientation[eye], local, direction);
+			if (direction[2] > -1e-4f)
+				continue;
+			t = (-distance - origin[2]) / direction[2];
+			x = origin[0] + direction[0] * t;
+			y = origin[1] + direction[1] * t;
+			if (edge == 0 && x < edges[0])
+				edges[0] = x;
+			if (edge == 1 && x > edges[1])
+				edges[1] = x;
+			if (edge == 2 && y > edges[2])
+				edges[2] = y;
+			if (edge == 3 && y < edges[3])
+				edges[3] = y;
+		}
+	}
+}
+
+/* what the eyes see of the glass, and the visor's image's edges about it
+(tangents at the glass's distance: left, right, up, down) */
 static void visor_extent(float fov[4], float extent[4])
 {
-	fov[0] = visor.fov[0][0] < visor.fov[1][0] ? visor.fov[0][0] : visor.fov[1][0];
-	fov[1] = visor.fov[0][1] > visor.fov[1][1] ? visor.fov[0][1] : visor.fov[1][1];
-	fov[2] = visor.fov[0][2] > visor.fov[1][2] ? visor.fov[0][2] : visor.fov[1][2];
-	fov[3] = visor.fov[0][3] < visor.fov[1][3] ? visor.fov[0][3] : visor.fov[1][3];
+	int edge;
+
+	footprint(VR_GLASS_DISTANCE, fov);
+	for (edge = 0; edge < 4; edge++)
+		fov[edge] /= VR_GLASS_DISTANCE;
 	extent[0] = fov[0] * 1.04f - VISOR_MARGIN;
 	extent[1] = fov[1] * 1.04f + VISOR_MARGIN;
 	extent[2] = fov[2] * 1.04f + VISOR_MARGIN;
 	extent[3] = fov[3] * 1.04f - VISOR_MARGIN;
+}
+
+/* ---------- the HUD's panels */
+
+/* the direction (x right, y up, -z ahead) at angles across and up */
+static void angles_direction(float across, float up, float out[3])
+{
+	out[0] = sinf(across) * cosf(up);
+	out[1] = sinf(up);
+	out[2] = -cosf(across) * cosf(up);
+}
+
+static void cross(const float a[3], const float b[3], float out[3])
+{
+	float r[3];
+
+	r[0] = a[1] * b[2] - a[2] * b[1];
+	r[1] = a[2] * b[0] - a[0] * b[2];
+	r[2] = a[0] * b[1] - a[1] * b[0];
+	memcpy(out, r, sizeof(r));
+}
+
+static float dot(const float a[3], const float b[3])
+{
+	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static void normalize(float v[3])
+{
+	float length = sqrtf(dot(v, v));
+	int axis;
+
+	if (length > 0.0f)
+	{
+		for (axis = 0; axis < 3; axis++)
+			v[axis] /= length;
+	}
+}
+
+/* a panel's plane, for the HUD's half angles (radians), its distance
+(metres) and vr.hud_depth */
+static void panel_geometry(int index, const float half_angles[2], float distance, float depth,
+	struct vr_visor_panel *panel)
+{
+	static const float world_up[3] = { 0.0f, 1.0f, 0.0f };
+	const float *region = panel_layout[index].region;
+	float across, up, tilt = panel_layout[index].tilt * depth, normal[3], half[2] = { 0.0f, 0.0f };
+	int axis, edge, step;
+
+	memset(panel, 0, sizeof(*panel));
+	panel->group = panel_layout[index].group;
+	memcpy(panel->region, region, sizeof(panel->region));
+	/* its middle, facing the head, tilted back (its top farther) */
+	across = (region[0] + region[2] - 1.0f) * half_angles[0];
+	up = (1.0f - region[1] - region[3]) * half_angles[1];
+	angles_direction(across, up, panel->centre);
+	cross(panel->centre, world_up, panel->right);
+	normalize(panel->right);
+	cross(panel->right, panel->centre, panel->up);
+	normalize(panel->up);
+	for (axis = 0; axis < 3; axis++)
+		panel->up[axis] = panel->up[axis] * cosf(tilt) + panel->centre[axis] * sinf(tilt);
+	cross(panel->right, panel->up, normal);
+	/* as large as the region's edges' directions meet it */
+	for (edge = 0; edge < 4; edge++)
+	{
+		for (step = 0; step <= 16; step++)
+		{
+			float f = (float)step / 16.0f, u, v, direction[3], point[3], t, denominator;
+
+			u = edge == 0 ? region[0] : edge == 1 ? region[2] : region[0] + (region[2] - region[0]) * f;
+			v = edge == 2 ? region[1] : edge == 3 ? region[3] : region[1] + (region[3] - region[1]) * f;
+			angles_direction((2.0f * u - 1.0f) * half_angles[0], (1.0f - 2.0f * v) * half_angles[1], direction);
+			denominator = dot(direction, normal);
+			if (fabsf(denominator) < 1e-4f)
+				continue;
+			t = dot(panel->centre, normal) / denominator;
+			for (axis = 0; axis < 3; axis++)
+				point[axis] = direction[axis] * t - panel->centre[axis];
+			if (fabsf(dot(point, panel->right)) > half[0])
+				half[0] = fabsf(dot(point, panel->right));
+			if (fabsf(dot(point, panel->up)) > half[1])
+				half[1] = fabsf(dot(point, panel->up));
+		}
+	}
+	panel->half_size[0] = half[0];
+	panel->half_size[1] = half[1];
+	panel->distance = distance * (1.0f + panel_layout[index].depth * depth);
+	if (panel->distance < PANEL_NEAREST)
+		panel->distance = PANEL_NEAREST;
+}
+
+void vr_visor_panel_sizes(int width[VR_PANEL_COUNT], int height[VR_PANEL_COUNT])
+{
+	float half_angles[2], density;
+	int index;
+
+	settings_read();
+	half_angles[0] = clamp((float)config_real("vr.hud_size"), 20.0f, 120.0f) * 0.5f * (float)M_PI / 180.0f;
+	half_angles[1] = half_angles[0] * HUD_ASPECT;
+	/* as many pixels for an angle as the HUD's */
+	density = HUD_PIXELS_ACROSS / (2.0f * half_angles[0]);
+	for (index = 0; index < VR_PANEL_COUNT; index++)
+	{
+		struct vr_visor_panel panel;
+
+		width[index] = height[index] = 0;
+		if (!settings.visor)
+			continue;
+		/* (the most the tilt and the region's curve may take) */
+		panel_geometry(index, half_angles, 2.0f, 2.0f, &panel);
+		width[index] = ((int)(2.0f * panel.half_size[0] * density) + 15) & ~15;
+		height[index] = ((int)(2.0f * panel.half_size[1] * density) + 15) & ~15;
+		if (width[index] > 2048)
+			width[index] = 2048;
+		if (height[index] > 2048)
+			height[index] = 2048;
+	}
+}
+
+int vr_visor_panels(struct vr_visor_panel panels[VR_PANEL_COUNT])
+{
+	int index;
+
+	settings_read();
+	if (!settings.visor || visor.menus || settings.depth <= 0.0f)
+		return 0;
+	for (index = 0; index < VR_PANEL_COUNT; index++)
+		panel_geometry(index, visor.half_angles, visor.distance, settings.depth, &panels[index]);
+	return 1;
+}
+
+/* the rotation whose axes are these (orthonormal) */
+static void quaternion_from_axes(const float x[3], const float y[3], const float z[3], float q[4])
+{
+	float trace = x[0] + y[1] + z[2], s;
+
+	if (trace > 0.0f)
+	{
+		s = 0.5f / sqrtf(trace + 1.0f);
+		q[3] = 0.25f / s;
+		q[0] = (y[2] - z[1]) * s;
+		q[1] = (z[0] - x[2]) * s;
+		q[2] = (x[1] - y[0]) * s;
+	}
+	else if (x[0] > y[1] && x[0] > z[2])
+	{
+		s = 2.0f * sqrtf(1.0f + x[0] - y[1] - z[2]);
+		q[3] = (y[2] - z[1]) / s;
+		q[0] = 0.25f * s;
+		q[1] = (y[0] + x[1]) / s;
+		q[2] = (z[0] + x[2]) / s;
+	}
+	else if (y[1] > z[2])
+	{
+		s = 2.0f * sqrtf(1.0f + y[1] - x[0] - z[2]);
+		q[3] = (z[0] - x[2]) / s;
+		q[0] = (y[0] + x[1]) / s;
+		q[1] = 0.25f * s;
+		q[2] = (z[1] + y[2]) / s;
+	}
+	else
+	{
+		s = 2.0f * sqrtf(1.0f + z[2] - x[0] - y[1]);
+		q[3] = (x[1] - y[0]) / s;
+		q[0] = (z[0] + x[2]) / s;
+		q[1] = (z[1] + y[2]) / s;
+		q[2] = 0.25f * s;
+	}
 }
 
 void vr_visor_layers(struct vr_host_layers *layers, int visor_drawn)
@@ -271,6 +568,7 @@ void vr_visor_layers(struct vr_host_layers *layers, int visor_drawn)
 	float d = visor.distance, tangent_up = tanf(visor.half_angles[1]);
 	int follows = settings.lag > 0.0f && visor.orientation_valid && visor.head.valid;
 	int axis;
+	float base[3];
 
 	if (!visor.logged)
 	{
@@ -289,6 +587,8 @@ void vr_visor_layers(struct vr_host_layers *layers, int visor_drawn)
 		memcpy(layers->hud_pose.orientation, visor.orientation, sizeof(visor.orientation));
 		memcpy(layers->hud_pose.position, visor.head.position, sizeof(visor.head.position));
 	}
+	/* (the middle of the head: the panels' origin) */
+	memcpy(base, layers->hud_pose.position, sizeof(base));
 	if (visor.cylinder)
 	{
 		/* about the middle of the head */
@@ -310,7 +610,36 @@ void vr_visor_layers(struct vr_host_layers *layers, int visor_drawn)
 		layers->hud_size[0] = 2.0f * d * tanf(visor.half_angles[0]);
 		layers->hud_size[1] = 2.0f * d * tangent_up / cosf(visor.half_angles[0]);
 	}
-	/* the visor: on the head, over the eyes' whole view */
+	/* the HUD's panels, placed as its layer is (vr.c marks those drawn) */
+	{
+		struct vr_visor_panel panels[VR_PANEL_COUNT];
+		int index, any = vr_visor_panels(panels);
+
+		for (index = 0; index < VR_PANEL_COUNT; index++)
+		{
+			const struct vr_visor_panel *panel = &panels[index];
+			float offset[3], back[3], orientation[4];
+
+			if (!any || !layers->panels[index].shown)
+			{
+				memset(&layers->panels[index], 0, sizeof(layers->panels[index]));
+				continue;
+			}
+			for (axis = 0; axis < 3; axis++)
+				offset[axis] = panel->centre[axis] * panel->distance;
+			quaternion_rotate(layers->hud_pose.orientation, offset, offset);
+			for (axis = 0; axis < 3; axis++)
+				layers->panels[index].pose.position[axis] = base[axis] + offset[axis];
+			cross(panel->right, panel->up, back);
+			quaternion_from_axes(panel->right, panel->up, back, orientation);
+			quaternion_multiply(layers->hud_pose.orientation, orientation, layers->panels[index].pose.orientation);
+			layers->panels[index].pose.valid = 1;
+			layers->panels[index].size[0] = 2.0f * panel->half_size[0] * panel->distance;
+			layers->panels[index].size[1] = 2.0f * panel->half_size[1] * panel->distance;
+			layers->panels[index].over_hud = panel->distance < d;
+		}
+	}
+	/* the visor's glass: on the head, over the eyes' whole view */
 	layers->visor = visor_drawn;
 	if (visor_drawn)
 	{
@@ -319,11 +648,11 @@ void vr_visor_layers(struct vr_host_layers *layers, int visor_drawn)
 		visor_extent(fov, extent);
 		memset(&layers->visor_pose, 0, sizeof(layers->visor_pose));
 		layers->visor_pose.orientation[3] = 1.0f;
-		layers->visor_pose.position[0] = (extent[0] + extent[1]) * 0.5f * VISOR_DISTANCE;
-		layers->visor_pose.position[1] = (extent[2] + extent[3]) * 0.5f * VISOR_DISTANCE;
-		layers->visor_pose.position[2] = -VISOR_DISTANCE;
-		layers->visor_size[0] = (extent[1] - extent[0]) * VISOR_DISTANCE;
-		layers->visor_size[1] = (extent[2] - extent[3]) * VISOR_DISTANCE;
+		layers->visor_pose.position[0] = (extent[0] + extent[1]) * 0.5f * VR_GLASS_DISTANCE;
+		layers->visor_pose.position[1] = (extent[2] + extent[3]) * 0.5f * VR_GLASS_DISTANCE;
+		layers->visor_pose.position[2] = -VR_GLASS_DISTANCE;
+		layers->visor_size[0] = (extent[1] - extent[0]) * VR_GLASS_DISTANCE;
+		layers->visor_size[1] = (extent[2] - extent[3]) * VR_GLASS_DISTANCE;
 	}
 }
 
@@ -341,7 +670,6 @@ void halo_vr_visor_state(const struct halo_vr_visor_state *state)
 
 	settings_read();
 	visor.presence = ease(visor.presence, state->active ? 1.0f : 0.0f, seconds, PRESENCE_EASE);
-	visor.hit *= expf(-seconds / HIT_FADE);
 	visor.full *= expf(-seconds / FULL_FADE);
 	visor.wound *= expf(-seconds / WOUND_FADE);
 	visor.flicker += seconds;
@@ -351,6 +679,7 @@ void halo_vr_visor_state(const struct halo_vr_visor_state *state)
 	{
 		visor.known = 0;
 		visor.active = 0;
+		visor.look.glow = 0.0f;
 		visor.warning = ease(visor.warning, 0.0f, seconds, WARNING_EASE);
 		visor.charge = ease(visor.charge, 0.0f, seconds, CHARGE_EASE);
 		return;
@@ -363,17 +692,11 @@ void halo_vr_visor_state(const struct halo_vr_visor_state *state)
 	}
 	if (visor.known && state->has_shield)
 	{
-		float drop = visor.shield - state->shield;
-
-		/* hit: the flare as bright as the hit is hard */
-		if (drop > 0.001f)
-			visor.hit = clamp(visor.hit + 0.35f + 3.0f * drop, 0.0f, 1.0f);
 		/* broken (or as good as: a frame later they may be recharging) */
 		if (visor.shield > SHIELD_GONE && state->shield <= SHIELD_GONE)
 		{
 			platform_log("vr: visor: the shields are down (from %.2f)", visor.shield);
 			visor.flicker = 0.0f;
-			visor.hit = 1.0f;
 		}
 		/* full again, after recharging */
 		if (visor.shield < 1.0f && state->shield >= 1.0f && visor.charge > 0.1f)
@@ -403,6 +726,7 @@ void halo_vr_visor_state(const struct halo_vr_visor_state *state)
 	visor.shield = state->shield;
 	visor.body = state->body;
 	visor.known = 1;
+	visor.look = *state;
 }
 
 /* the HUD's opacity as the shields break: three dips, each shallower, then
@@ -468,33 +792,133 @@ void vr_visor_hud_image(struct vr_visor_hud_image *image)
 
 void vr_visor_image(struct vr_visor_image *image)
 {
-	static const float shield_colour[3] = { 0.30f, 0.70f, 1.00f };
-	static const float full_colour[3] = { 0.45f, 0.80f, 1.00f };
 	static const float red[3] = { 1.00f, 0.10f, 0.05f };
 	float effects, warning, glow = 0.0f;
 	int channel;
 
 	settings_read();
 	memset(image, 0, sizeof(*image));
-	image->charge_level = -1.0f;
 	if (!settings.visor || visor.menus || visor.presence < 0.01f)
 		return;
 	visor_extent(image->fov, image->extent);
 	image->frame = settings.frame * visor.presence;
 	effects = settings.effects ? visor.presence : 0.0f;
-	/* the warning's pulse: a sine, never off while it lasts */
-	warning = visor.warning * (0.55f + 0.45f * sinf(2.0f * (float)M_PI * WARNING_PULSE * visor.pulse));
+	/* the warning's pulse: a sine, never off while it lasts; it gives way
+	to the shields' own energy as they recharge */
+	warning = visor.warning * (1.0f - visor.charge) *
+		(0.55f + 0.45f * sinf(2.0f * (float)M_PI * WARNING_PULSE * visor.pulse));
 	for (channel = 0; channel < 3; channel++)
 	{
-		image->glow[channel] = effects * (shield_colour[channel] * visor.hit * 0.25f +
-			full_colour[channel] * visor.full * 0.15f + red[channel] * (visor.wound * 0.30f + warning * 0.22f));
-		image->charge[channel] = effects * shield_colour[channel] * visor.charge * 0.12f;
-		glow += image->glow[channel] + image->charge[channel];
+		image->glow[channel] = effects * red[channel] * (visor.wound * 0.18f + warning * 0.13f);
+		glow += image->glow[channel];
 	}
-	/* (an overshield charges from 1 to 3) */
-	if (visor.charge > 0.01f && effects > 0.0f)
+	/* the shields' energy on the glass: the game's plasma, with its noise
+	map (no map, no energy) */
+	if (effects > 0.0f && visor.look.look && visor.look.noise_texture[0] && visor.look.noise_texture[1])
+	{
+		image->plasma = 1;
+		image->plasma_glow = effects * clamp(visor.look.glow, 0.0f, 1.0f);
+		image->charge = effects * visor.charge;
+		/* (an overshield charges from 1 to 3) */
 		image->charge_level = clamp(visor.shield <= 1.0f ? visor.shield : (visor.shield - 1.0f) * 0.5f, 0.0f, 1.0f);
+		image->full = effects * visor.full;
+		memcpy(image->perpendicular, visor.look.perpendicular, sizeof(image->perpendicular));
+		memcpy(image->parallel, visor.look.parallel, sizeof(image->parallel));
+		memcpy(image->noise_scale, visor.look.noise_scale, sizeof(image->noise_scale));
+		memcpy(image->noise_period, visor.look.noise_period, sizeof(image->noise_period));
+		memcpy(image->noise_direction, visor.look.noise_direction, sizeof(image->noise_direction));
+		image->noise_texture[0] = visor.look.noise_texture[0];
+		image->noise_texture[1] = visor.look.noise_texture[1];
+		image->time = visor.look.time;
+		glow += image->plasma_glow + image->charge + image->full;
+	}
 	image->shown = image->frame > 0.001f || glow > 0.001f;
+}
+
+int vr_visor_rim(struct vr_visor_rim *rim)
+{
+	int eye, row;
+
+	settings_read();
+	memset(rim, 0, sizeof(*rim));
+	if (!settings.visor || visor.menus || settings.rim <= 0.0f || visor.presence < 0.01f || !visor.head.valid)
+		return 0;
+	rim->strength = settings.rim * visor.presence;
+	footprint(VR_RIM_DISTANCE, rim->edges);
+	for (eye = 0; eye < 2; eye++)
+	{
+		float inverse[4], axis[3], position[3], column[3][3];
+		int i;
+
+		if (visor.eyes_known)
+		{
+			inverse[0] = -visor.eye_orientation[eye][0];
+			inverse[1] = -visor.eye_orientation[eye][1];
+			inverse[2] = -visor.eye_orientation[eye][2];
+			inverse[3] = visor.eye_orientation[eye][3];
+			memcpy(position, visor.eye_position[eye], sizeof(position));
+		}
+		else
+		{
+			inverse[0] = inverse[1] = inverse[2] = 0.0f;
+			inverse[3] = 1.0f;
+			position[0] = eye ? 0.032f : -0.032f;
+			position[1] = position[2] = 0.0f;
+		}
+		/* the eye's frame from the head's: x' = R (x - position) */
+		for (i = 0; i < 3; i++)
+		{
+			float unit[3] = { 0.0f, 0.0f, 0.0f };
+
+			unit[i] = 1.0f;
+			quaternion_rotate(inverse, unit, column[i]);
+		}
+		quaternion_rotate(inverse, position, axis);
+		for (row = 0; row < 3; row++)
+		{
+			rim->eye[eye][row][0] = column[0][row];
+			rim->eye[eye][row][1] = column[1][row];
+			rim->eye[eye][row][2] = column[2][row];
+			rim->eye[eye][row][3] = -axis[row];
+		}
+		memcpy(rim->fov[eye], visor.fov[eye], sizeof(rim->fov[eye]));
+	}
+	if (!visor.rim_logged && visor.eyes_known)
+	{
+		/* the view it leaves wholly clear: within its lip's inner edge (d3d8_gl.c's
+		RIM_CLEAR of the edges), from each eye, outward, up and down (degrees),
+		of the eye's own */
+		float clear[2][3], whole[2][3];
+
+		for (eye = 0; eye < 2; eye++)
+		{
+			int side;
+
+			for (side = 0; side < 3; side++)
+			{
+				float point[3], local[3];
+				int axis;
+
+				point[0] = side == 0 ? RIM_CLEAR * rim->edges[eye ? 1 : 0] : visor.eye_position[eye][0];
+				point[1] = side == 0 ? visor.eye_position[eye][1] : RIM_CLEAR * rim->edges[side == 1 ? 2 : 3];
+				point[2] = -VR_RIM_DISTANCE;
+				for (axis = 0; axis < 3; axis++)
+				{
+					local[axis] = rim->eye[eye][axis][0] * point[0] + rim->eye[eye][axis][1] * point[1] +
+						rim->eye[eye][axis][2] * point[2] + rim->eye[eye][axis][3];
+				}
+				clear[eye][side] = fabsf(atan2f(side == 0 ? local[0] : local[1], -local[2])) * 180.0f / (float)M_PI;
+				whole[eye][side] = fabsf(atanf(visor.fov[eye][side == 0 ? eye : side == 1 ? 2 : 3])) * 180.0f /
+					(float)M_PI;
+			}
+		}
+		platform_log("vr: helmet rim: clear to %.0f of %.0f degrees outward, %.0f of %.0f up and %.0f of %.0f down "
+			"(left eye), %.0f of %.0f, %.0f of %.0f and %.0f of %.0f (right)", clear[0][0], whole[0][0], clear[0][1],
+			whole[0][1], clear[0][2], whole[0][2], clear[1][0], whole[1][0], clear[1][1], whole[1][1], clear[1][2],
+			whole[1][2]);
+		visor.rim_logged = 1;
+	}
+	return 1;
 }
 
 /* ---------- debug.screenshot_every: what the headset shows */
@@ -583,13 +1007,20 @@ static void layer_over(unsigned char *pixel, const unsigned char *image, int wid
 
 void vr_visor_composite(unsigned char *eyes[2], int width, int height, const struct vr_host_layers *layers,
 	const struct vr_host_pose *head, const unsigned char *hud, int hud_width, int hud_height,
-	const unsigned char *visor_pixels, int visor_width, int visor_height)
+	const unsigned char *visor_pixels, int visor_width, int visor_height, unsigned char *const panels[VR_PANEL_COUNT],
+	const int panel_width[VR_PANEL_COUNT], const int panel_height[VR_PANEL_COUNT])
 {
 	float hud_position[3], hud_orientation[4], visor_position[3], visor_orientation[4];
-	int eye, x, y;
+	float panel_position[VR_PANEL_COUNT][3], panel_orientation[VR_PANEL_COUNT][4];
+	int eye, x, y, panel, over;
 
 	layer_pose(&layers->hud_pose, layers->hud_head_locked, head, hud_position, hud_orientation);
 	layer_pose(&layers->visor_pose, 1, head, visor_position, visor_orientation);
+	for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+	{
+		layer_pose(&layers->panels[panel].pose, layers->hud_head_locked, head, panel_position[panel],
+			panel_orientation[panel]);
+	}
 	for (eye = 0; eye < 2; eye++)
 	{
 		const float *fov = layers->fov[eye];
@@ -605,16 +1036,29 @@ void vr_visor_composite(unsigned char *eyes[2], int width, int height, const str
 				local[1] = fov[3] + (fov[2] - fov[3]) * ((float)y + 0.5f) / (float)height;
 				local[2] = -1.0f;
 				quaternion_rotate(layers->eye[eye].orientation, local, direction);
+				/* (in the order the host submits them: host_vr.c) */
+				for (over = 0; over < 2; over++)
+				{
+					if (over && layers->hud && hud && layer_hit(layers->eye[eye].position, direction, hud_position,
+						hud_orientation, layers->hud_cylinder, layers->hud_radius, layers->hud_angle, layers->hud_size,
+						uv))
+					{
+						layer_over(pixel, hud, hud_width, hud_height, uv);
+					}
+					for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+					{
+						if (layers->hud && layers->panels[panel].shown && !layers->panels[panel].over_hud == !over &&
+							panels[panel] && layer_hit(layers->eye[eye].position, direction, panel_position[panel],
+								panel_orientation[panel], 0, 0.0f, 0.0f, layers->panels[panel].size, uv))
+						{
+							layer_over(pixel, panels[panel], panel_width[panel], panel_height[panel], uv);
+						}
+					}
+				}
 				if (layers->visor && visor_pixels && layer_hit(layers->eye[eye].position, direction, visor_position,
 					visor_orientation, 0, 0.0f, 0.0f, layers->visor_size, uv))
 				{
 					layer_over(pixel, visor_pixels, visor_width, visor_height, uv);
-				}
-				if (layers->hud && hud && layer_hit(layers->eye[eye].position, direction, hud_position,
-					hud_orientation, layers->hud_cylinder, layers->hud_radius, layers->hud_angle, layers->hud_size,
-					uv))
-				{
-					layer_over(pixel, hud, hud_width, hud_height, uv);
 				}
 			}
 		}

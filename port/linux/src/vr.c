@@ -322,6 +322,8 @@ static void game_axes(const float v[3], float yaw, float out[3])
 
 /* ---------- the session */
 
+static void acquired_clear(void);
+
 int halo_vr_initialize(void)
 {
 	if (vr.initialized || vr.failed)
@@ -339,6 +341,7 @@ int halo_vr_initialize(void)
 	vr.info.hud_width = HUD_WIDTH;
 	vr.info.hud_height = HUD_HEIGHT;
 	vr.info.visor_width = vr.info.visor_height = VR_VISOR_IMAGE_SIZE;
+	vr_visor_panel_sizes(vr.info.panel_width, vr.info.panel_height);
 	vr.info.standing = settings.standing;
 	vr.info.refresh_rate_wanted = (float)config_real("vr.refresh_rate");
 	vr.info.depth = config_boolean("vr.depth");
@@ -349,7 +352,7 @@ int halo_vr_initialize(void)
 		return 0;
 	}
 	vr.force_render = config_boolean("debug.vr_force_render");
-	vr.acquired[0] = vr.acquired[1] = vr.acquired[2] = vr.acquired[3] = -1;
+	acquired_clear();
 	vr_visor_initialize(&vr.info);
 	vr.initialized = 1;
 	vr.statistics = config_boolean("debug.gpu_stats");
@@ -368,6 +371,20 @@ void halo_vr_hud_size(int *width, int *height)
 {
 	*width = vr.info.hud_width;
 	*height = vr.info.hud_height;
+}
+
+void halo_vr_panel_size(int panel, int *width, int *height)
+{
+	*width = panel >= 0 && panel < VR_PANEL_COUNT ? vr.info.panel_width[panel] : 0;
+	*height = panel >= 0 && panel < VR_PANEL_COUNT ? vr.info.panel_height[panel] : 0;
+}
+
+static void acquired_clear(void)
+{
+	int swapchain;
+
+	for (swapchain = 0; swapchain < VR_SWAPCHAIN_COUNT; swapchain++)
+		vr.acquired[swapchain] = -1;
 }
 
 unsigned int halo_vr_image(int swapchain)
@@ -817,7 +834,7 @@ static int frame_begin(void)
 	if (vr.pending)
 	{
 		host_vr_frame_end(&vr.pending_layers);
-		vr.acquired[0] = vr.acquired[1] = vr.acquired[2] = vr.acquired[3] = -1;
+		acquired_clear();
 		vr.pending = 0;
 	}
 	settings_read();
@@ -895,6 +912,10 @@ void halo_vr_present(int eyes_drawn, int hud_drawn)
 		if (pending->projection && !vr.menus && vr_visor_enabled())
 		{
 			/* the HUD on the helmet's visor (vr_visor.c) */
+			int panel;
+
+			for (panel = 0; panel < VR_PANEL_COUNT; panel++)
+				pending->panels[panel].shown = vr.acquired[VR_SWAPCHAIN_PANEL + panel] >= 0;
 			vr_visor_layers(pending, vr.acquired[VR_SWAPCHAIN_VISOR] >= 0);
 		}
 		else if (pending->projection && !vr.menus)
@@ -1010,7 +1031,7 @@ int halo_vr_view(struct halo_vr_view *view)
 	does (a moment behind the head, vr.hud_lag) */
 	memcpy(view->hud_forward, view->head_forward, sizeof(view->hud_forward));
 	memcpy(view->hud_up, view->head_up, sizeof(view->hud_up));
-	vr_visor_follow(&vr.views.head, vr.views.fov, vr.views.display_elapsed > 0.0f ? vr.views.display_elapsed :
+	vr_visor_follow(&vr.views.head, vr.views.eye, vr.views.fov, vr.views.display_elapsed > 0.0f ? vr.views.display_elapsed :
 		vr.views.display_period, settings.hud_distance, settings.hud_size);
 	view->hud_visor = vr_visor_enabled();
 	if (view->hud_visor)
