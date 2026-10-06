@@ -77,9 +77,6 @@ more (tangents) */
 #define HUD_PIXELS_ACROSS 1280.0f
 /* the panels' distances: never nearer (metres) */
 #define PANEL_NEAREST 1.0f
-/* the rim's lip begins this far out to the edges of the eyes' view on its
-plane (d3d8_gl.c's first ring, vr_draw_rim) */
-#define RIM_CLEAR 0.93f
 /* the HUD's height for its width (the 640x480 screen) */
 #define HUD_ASPECT 0.75f
 /* the shields' effects: the flash as they are full again, and the body's
@@ -105,27 +102,35 @@ static struct
 	int effects;
 	float glow;
 	float depth;
-	float rim;
+	/* each panel's distance from the HUD's at vr.hud_depth 1 (metres), the
+	tracker's tilt (radians) */
+	float panel_offset[VR_PANEL_COUNT];
+	float tracker_tilt;
+	float rim, rim_depth, rim_reach;
+	float energy;
 } settings = { (unsigned long)-1 };
 
 /* the HUD's panels: the group each shows, the HUD's region it is in (0 to
-1, across and down), its distance from the HUD's (a fraction of it, times
-vr.hud_depth: before it less than 0) and its tilt back (radians, times
-vr.hud_depth). The regions are the anchors' corners of the game's 640x480
-HUD, where hud_draw.c places their elements, with room to spare. */
+1, across and down), and the setting of its distance from the HUD's (at
+vr.hud_depth 1, metres: before it less than 0). The regions are the anchors'
+corners of the game's 640x480 HUD, where hud_draw.c places their elements,
+with room to spare. The tracker's panel tilts back (vr.hud_tracker_tilt). */
 static const struct
 {
 	int group;
 	float region[4];
-	float depth;
-	float tilt;
+	const char *offset;
 } panel_layout[VR_PANEL_COUNT] =
 {
-	{ HALO_VR_HUD_GROUP_WORLD, { 0.0f, 0.0f, 1.0f, 1.0f }, 0.25f, 0.0f },
-	{ HALO_VR_HUD_GROUP_WEAPON, { 0.0f, 0.0f, 0.5f, 0.45f }, -0.125f, 0.0f },
-	{ HALO_VR_HUD_GROUP_STATUS, { 0.5f, 0.0f, 1.0f, 0.45f }, -0.175f, 0.0f },
-	{ HALO_VR_HUD_GROUP_TRACKER, { 0.0f, 0.5f, 0.45f, 1.0f }, -0.275f, 0.35f },
+	{ HALO_VR_HUD_GROUP_WORLD, { 0.0f, 0.0f, 1.0f, 1.0f }, "vr.hud_depth_world" },
+	{ HALO_VR_HUD_GROUP_WEAPON, { 0.0f, 0.0f, 0.5f, 0.45f }, "vr.hud_depth_weapon" },
+	{ HALO_VR_HUD_GROUP_STATUS, { 0.5f, 0.0f, 1.0f, 0.45f }, "vr.hud_depth_status" },
+	{ HALO_VR_HUD_GROUP_TRACKER, { 0.0f, 0.5f, 0.45f, 1.0f }, "vr.hud_depth_tracker" },
 };
+/* the tracker's panel's, the one tilted */
+#define TRACKER_PANEL 3
+/* the most a panel tilts (radians), for its image's size */
+#define TILT_MOST 0.8f
 
 static struct
 {
@@ -181,7 +186,17 @@ static void settings_read(void)
 	settings.effects = config_boolean("vr.visor_effects");
 	settings.glow = clamp((float)config_real("vr.hud_glow"), 0.0f, 1.0f);
 	settings.depth = clamp((float)config_real("vr.hud_depth"), 0.0f, 2.0f);
+	{
+		int index;
+
+		for (index = 0; index < VR_PANEL_COUNT; index++)
+			settings.panel_offset[index] = clamp((float)config_real(panel_layout[index].offset), -1.0f, 2.0f);
+	}
+	settings.tracker_tilt = clamp((float)config_real("vr.hud_tracker_tilt"), -45.0f, 45.0f) * (float)M_PI / 180.0f;
 	settings.rim = clamp((float)config_real("vr.helmet_rim"), 0.0f, 1.0f);
+	settings.rim_depth = clamp((float)config_real("vr.helmet_rim_depth"), 0.05f, 0.25f);
+	settings.rim_reach = clamp((float)config_real("vr.helmet_rim_reach"), 0.0f, 0.2f);
+	settings.energy = clamp((float)config_real("vr.visor_energy"), 0.0f, 2.0f);
 }
 
 int vr_visor_enabled(void)
@@ -431,13 +446,13 @@ static void normalize(float v[3])
 }
 
 /* a panel's plane, for the HUD's half angles (radians), its distance
-(metres) and vr.hud_depth */
-static void panel_geometry(int index, const float half_angles[2], float distance, float depth,
+(metres), vr.hud_depth and its tilt (radians) */
+static void panel_geometry(int index, const float half_angles[2], float distance, float depth, float tilt,
 	struct vr_visor_panel *panel)
 {
 	static const float world_up[3] = { 0.0f, 1.0f, 0.0f };
 	const float *region = panel_layout[index].region;
-	float across, up, tilt = panel_layout[index].tilt * depth, normal[3], half[2] = { 0.0f, 0.0f };
+	float across, up, normal[3], half[2] = { 0.0f, 0.0f };
 	int axis, edge, step;
 
 	memset(panel, 0, sizeof(*panel));
@@ -478,7 +493,7 @@ static void panel_geometry(int index, const float half_angles[2], float distance
 	}
 	panel->half_size[0] = half[0];
 	panel->half_size[1] = half[1];
-	panel->distance = distance * (1.0f + panel_layout[index].depth * depth);
+	panel->distance = distance + settings.panel_offset[index] * depth;
 	if (panel->distance < PANEL_NEAREST)
 		panel->distance = PANEL_NEAREST;
 }
@@ -501,7 +516,7 @@ void vr_visor_panel_sizes(int width[VR_PANEL_COUNT], int height[VR_PANEL_COUNT])
 		if (!settings.visor)
 			continue;
 		/* (the most the tilt and the region's curve may take) */
-		panel_geometry(index, half_angles, 2.0f, 2.0f, &panel);
+		panel_geometry(index, half_angles, 2.0f, 1.0f, index == TRACKER_PANEL ? TILT_MOST : 0.0f, &panel);
 		width[index] = ((int)(2.0f * panel.half_size[0] * density) + 15) & ~15;
 		height[index] = ((int)(2.0f * panel.half_size[1] * density) + 15) & ~15;
 		if (width[index] > 2048)
@@ -519,7 +534,8 @@ int vr_visor_panels(struct vr_visor_panel panels[VR_PANEL_COUNT])
 	if (!settings.visor || visor.menus || settings.depth <= 0.0f)
 		return 0;
 	for (index = 0; index < VR_PANEL_COUNT; index++)
-		panel_geometry(index, visor.half_angles, visor.distance, settings.depth, &panels[index]);
+		panel_geometry(index, visor.half_angles, visor.distance, settings.depth,
+			index == TRACKER_PANEL ? settings.tracker_tilt : 0.0f, &panels[index]);
 	return 1;
 }
 
@@ -818,6 +834,7 @@ void vr_visor_image(struct vr_visor_image *image)
 	{
 		image->plasma = 1;
 		image->plasma_glow = effects * clamp(visor.look.glow, 0.0f, 1.0f);
+		image->energy = settings.energy;
 		image->charge = effects * visor.charge;
 		/* (an overshield charges from 1 to 3) */
 		image->charge_level = clamp(visor.shield <= 1.0f ? visor.shield : (visor.shield - 1.0f) * 0.5f, 0.0f, 1.0f);
@@ -844,7 +861,9 @@ int vr_visor_rim(struct vr_visor_rim *rim)
 	if (!settings.visor || visor.menus || settings.rim <= 0.0f || visor.presence < 0.01f || !visor.head.valid)
 		return 0;
 	rim->strength = settings.rim * visor.presence;
-	footprint(VR_RIM_DISTANCE, rim->edges);
+	rim->distance = settings.rim_depth;
+	rim->reach = settings.rim_reach;
+	footprint(rim->distance, rim->edges);
 	for (eye = 0; eye < 2; eye++)
 	{
 		float inverse[4], axis[3], position[3], column[3][3];
@@ -885,9 +904,10 @@ int vr_visor_rim(struct vr_visor_rim *rim)
 	}
 	if (!visor.rim_logged && visor.eyes_known)
 	{
-		/* the view it leaves wholly clear: within its lip's inner edge (d3d8_gl.c's
-		RIM_CLEAR of the edges), from each eye, outward, up and down (degrees),
-		of the eye's own */
+		/* the view it leaves wholly clear: within its lip's inner edge (its
+		reach in from the edges), from each eye, outward, up and down
+		(degrees), of the eye's own */
+		float inner = 1.0f - rim->reach;
 		float clear[2][3], whole[2][3];
 
 		for (eye = 0; eye < 2; eye++)
@@ -899,9 +919,9 @@ int vr_visor_rim(struct vr_visor_rim *rim)
 				float point[3], local[3];
 				int axis;
 
-				point[0] = side == 0 ? RIM_CLEAR * rim->edges[eye ? 1 : 0] : visor.eye_position[eye][0];
-				point[1] = side == 0 ? visor.eye_position[eye][1] : RIM_CLEAR * rim->edges[side == 1 ? 2 : 3];
-				point[2] = -VR_RIM_DISTANCE;
+				point[0] = side == 0 ? inner * rim->edges[eye ? 1 : 0] : visor.eye_position[eye][0];
+				point[1] = side == 0 ? visor.eye_position[eye][1] : inner * rim->edges[side == 1 ? 2 : 3];
+				point[2] = -rim->distance;
 				for (axis = 0; axis < 3; axis++)
 				{
 					local[axis] = rim->eye[eye][axis][0] * point[0] + rim->eye[eye][axis][1] * point[1] +

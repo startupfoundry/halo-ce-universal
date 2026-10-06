@@ -286,15 +286,42 @@ static const struct config_setting config_settings[] =
 		"With vr.hud = \"visor\", how far the HUD trails your head's turns, in\n"
 		"seconds (smoothed, never more than 1.5 degrees behind; 0 none, up to 0.2)." },
 	{ "vr.hud_depth", _config_real, "1.0", "HALO_VR_HUD_DEPTH", _environment_value, _platform_desktop,
-		"With vr.hud = \"visor\", how far apart in depth the HUD's parts are (0\n"
-		"all at vr.hud_distance, to 2): at 1, the motion tracker 0.55 m nearer\n"
-		"than the HUD and tilted back, the shields 0.35 m and the weapon 0.25 m\n"
-		"nearer, the waypoints 0.5 m farther (never nearer than 1 m)." },
+		"With vr.hud = \"visor\", how far apart in depth the HUD's parts are, times\n"
+		"their own (vr.hud_depth_*): 0 all at vr.hud_distance, to 2 (never nearer\n"
+		"than 1 m)." },
+	{ "vr.hud_depth_tracker", _config_real, "-0.55", "HALO_VR_HUD_DEPTH_TRACKER", _environment_value,
+		_platform_desktop,
+		"With vr.hud = \"visor\", the motion tracker's distance from the HUD's at\n"
+		"vr.hud_depth 1, in metres (before it less than 0)." },
+	{ "vr.hud_depth_status", _config_real, "-0.35", "HALO_VR_HUD_DEPTH_STATUS", _environment_value,
+		_platform_desktop,
+		"With vr.hud = \"visor\", the shields' and health's distance from the HUD's\n"
+		"at vr.hud_depth 1, in metres." },
+	{ "vr.hud_depth_weapon", _config_real, "-0.25", "HALO_VR_HUD_DEPTH_WEAPON", _environment_value,
+		_platform_desktop,
+		"With vr.hud = \"visor\", the weapon's, its ammunition's and the grenades'\n"
+		"distance from the HUD's at vr.hud_depth 1, in metres." },
+	{ "vr.hud_depth_world", _config_real, "0.5", "HALO_VR_HUD_DEPTH_WORLD", _environment_value,
+		_platform_desktop,
+		"With vr.hud = \"visor\", the waypoints' and the players' names' distance\n"
+		"from the HUD's at vr.hud_depth 1, in metres." },
+	{ "vr.hud_tracker_tilt", _config_real, "20.0", "HALO_VR_HUD_TRACKER_TILT", _environment_value,
+		_platform_desktop,
+		"With vr.hud = \"visor\" and vr.hud_depth, how far the motion tracker\n"
+		"tilts back, in degrees (-45 to 45)." },
 	{ "vr.hud_glow", _config_real, "0.5", "HALO_VR_HUD_GLOW", _environment_value, _platform_desktop,
 		"With vr.hud = \"visor\", the HUD's glow on the visor (0 none to 1)." },
-	{ "vr.helmet_rim", _config_real, "0.0", "HALO_VR_HELMET_RIM", _environment_value, _platform_desktop,
+	{ "vr.helmet_rim", _config_real, "1.0", "HALO_VR_HELMET_RIM", _environment_value, _platform_desktop,
 		"With vr.hud = \"visor\", the helmet's faceplate about the visor, at the\n"
-		"edges of your view, in depth (0 none, for now, to 1)." },
+		"edges of your view, in depth (0 none to 1)." },
+	{ "vr.helmet_rim_depth", _config_real, "0.10", "HALO_VR_HELMET_RIM_DEPTH", _environment_value,
+		_platform_desktop,
+		"The helmet's rim's lip: how far before your eyes it is, in metres (0.05\n"
+		"to 0.25)." },
+	{ "vr.helmet_rim_reach", _config_real, "0.07", "HALO_VR_HELMET_RIM_REACH", _environment_value,
+		_platform_desktop,
+		"The helmet's rim's lip: how far in from the edges of your view it begins,\n"
+		"a fraction of them (0 to 0.2)." },
 	{ "vr.visor_frame", _config_real, "0.4", "HALO_VR_VISOR_FRAME", _environment_value, _platform_desktop,
 		"With vr.hud = \"visor\", the visor's glass: the edges of your view\n"
 		"darkened, and its faint tint (0 none to 1)." },
@@ -302,6 +329,9 @@ static const struct config_setting config_settings[] =
 		"With vr.hud = \"visor\", the shields on the visor's glass: their energy\n"
 		"across it, the armour's own, as they are hit and as they recharge; its\n"
 		"rim pulses red while they are low, and the HUD flickers as they break." },
+	{ "vr.visor_energy", _config_real, "1.0", "HALO_VR_VISOR_ENERGY", _environment_value, _platform_desktop,
+		"With vr.visor_effects, how strong the shields' energy on the glass is (0\n"
+		"none to 2)." },
 	{ "vr.menu_distance", _config_real, "2.5", "HALO_VR_MENU_DISTANCE", _environment_value, _platform_desktop,
 		"How far in front of you the menus are, in metres." },
 	{ "vr.menu_width", _config_real, "2.6", "HALO_VR_MENU_WIDTH", _environment_value, _platform_desktop,
