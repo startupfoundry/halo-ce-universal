@@ -1005,6 +1005,7 @@ The Steam Frame's controllers are the halves of an Xbox controller:
 | A, B, X, Y | Jump, melee, action and reload, switch weapon |
 | Left grip, the left hand on a long gun's foregrip | Aim it with both hands, along the line from the right hand to the left (`vr.two_handed`) |
 | A punch of the right controller | Melee (`vr.melee_gesture`) |
+| The left grip held, the left hand drawn back and swung, the grip let go | Throw a grenade where the hand threw it, as hard as it did (`vr.grenade_throw`, below) |
 | Left bumper, right bumper | Flashlight, switch grenade |
 | D-pad (left controller), View, Menu | The menus' d-pad, Back (scoreboard), Start (pause) |
 | Both grips, held | Recentre: the head's place and heading become the player's eye and facing (not while the left hand holds a foregrip) |
@@ -1012,6 +1013,38 @@ The Steam Frame's controllers are the halves of an Xbox controller:
 
 Other controllers that SteamVR maps to the Touch layout operate as well
 (the grips as the bumpers).
+
+#### Throwing a grenade with the left hand (`vr.grenade_throw = "gesture"`)
+
+Throw it as you would a ball: squeeze the left grip to take a grenade (a
+short buzz says you hold one; only with a grenade to throw, on foot), draw
+the hand back (beside your head, or low for a lob), swing it forward and
+open the hand. The grenade leaves from your hand as you let go, along the
+way the hand was going (lifted 8 degrees), as hard as you threw it: a
+throw of 5 m/s or faster throws as far as the left trigger does, slower
+ones shorter (to 30% of it), never farther. The left trigger still throws
+as ever, and the right bumper switches the grenade.
+
+- What counts as a swing: the hand moving forward (the way your head
+  faces) faster than 2 m/s, with the grip held for 0.1 s at least, from
+  no farther than 15 cm ahead of your eyes since you took it. A hand held
+  out (on a foregrip, reaching) and pushed forward is no throw; nor is the
+  grip let go of before a swing.
+- The swing starts the game's throw (as the left trigger does), and the
+  game's grenade is then yours: a swing held without letting go throws it
+  anyway after 0.75 s.
+- The left grip on a long gun's foregrip takes the foregrip instead
+  (`vr.two_handed`), and both grips held recentre: neither takes a grenade.
+- Your left hand and arm are the throw in first person: the weapon stays
+  in your right hand (with `vr.hands = "game"` the game's arms throw, timed
+  to yours). The player's body throws as you do: its throw waits before
+  letting go while you hold on, and lets go when you do (below, "How it
+  operates", for what the other players of a network game see).
+
+`debug.vr_throw_log = true` logs each step of a throw (the grip, the
+swing or why it was not one, the release's speed and direction, the
+game's throw timed to it); the thresholds are named constants at the top
+of `src/vr.c`.
 
 #### With a gamepad (`vr.aim = "gamepad"`)
 
@@ -1070,6 +1103,7 @@ headset's session is opened with, apply from the next start.
 | `vr.weapon_offset` | `"0.15, -0.22, 0.30"` | `HALO_VR_WEAPON_OFFSET` | With `vr.hands = "game"`: where the weapon's grip is from the eye that the game poses it for, in metres: right, up, forward. |
 | `vr.depth` | `false` | `HALO_VR_DEPTH` | `true`: give the runtime the eyes' depth too (`XR_KHR_composition_layer_depth`), for its reprojection. SteamVR on the Steam Frame cannot make a depth swapchain for an OpenGL session yet. |
 | `vr.melee_gesture` | `true` | `HALO_VR_MELEE_GESTURE` | A punch with the right controller (fast, in the direction it points) melees, as B does. |
+| `vr.grenade_throw` | `"gesture"` | `HALO_VR_GRENADE_THROW` | With `vr.aim = "controller"`: `"gesture"`, a grenade is thrown by throwing it with the left hand (above, "Throwing a grenade with the left hand") or with the left trigger; `"button"`, with the left trigger alone. |
 | `vr.two_handed` | `true` | `HALO_VR_TWO_HANDED` | With `vr.aim = "controller"`: a long gun (any but the pistols, the needler, the flag and the ball) is aimed along the line from the right hand to the left while the left grip holds it by the foregrip (pressed within 18 cm of the line ahead of the right hand). The aim turns to that line over 0.15 s, smoothed, and back when the grip is let go. |
 | `vr.hands` | `"arms"` | `HALO_VR_HANDS` | With `vr.aim = "controller"`: each first-person hand where its controller is (the right holding the weapon, its index finger on the trigger as far as the trigger is pulled; the left open, closing as the grip is pulled, and on a long gun's foregrip while it holds it). `"arms"`: the arms reach the hands from the shoulders (`vr.shoulders`). `"floating"`: no arms above the wrists. `"game"`: the game's arms, posed from the weapon in the right hand. A hand whose controller is not tracked is not drawn, nor its arm. |
 | `vr.shoulders` | `"0.19, -0.20, -0.07"` | `HALO_VR_SHOULDERS` | With `vr.hands = "arms"`: where each shoulder is from the eyes, in metres: out to its side, up, forward, turned with the body (which faces between the head and the hands, and follows the head past a 40 degree turn, and slowly). |
@@ -1086,13 +1120,32 @@ headset's session is opened with, apply from the next start.
 | `debug.vr_test_turn` | `0.0` | `HALO_VR_TEST_TURN` | Turn the player this many degrees a second, for automated tests without hands. |
 | `debug.vr_test_jitter` | `0.0` | `HALO_VR_TEST_JITTER` | Move the head by up to this many millimetres (and turn it as many hundredths of a degree) at random each frame, as a worn headset moves: for automated tests of what flickers when the view barely moves. |
 | `debug.vr_test_head` | `""` | `HALO_VR_TEST_HEAD` | Hold the head still and level where it is first located (a simulated headset's head wobbles), for automated tests: `"0"`, or `"<degrees> <seconds>"` turns it left and right by as many degrees over as many seconds, smoothly (a sine of the frames' display times). |
-| `debug.vr_test_hands` | `""` | `HALO_VR_TEST_HANDS` | Hold the controllers still, for automated tests without hands: `"lx ly lz lyaw lpitch lroll, rx ry rz ryaw rpitch rroll[, grip[, buttons[, trigger[, head[, frames[, move]]]]]]"`, the left and right hands in metres right, up and forward from the recentred head and degrees of yaw (left), pitch (up) and roll (right) (a hand 10 metres or more out is not tracked), the left grip's pull (0 to 1), the buttons pressed for the pose's first 20 frames (A 1, B 2, X 4, Y 8, the right trigger 65536, the left 131072), the right trigger's pull (0 to 1), the head turned (degrees left), the frames the pose lasts (`0`: 288) and the frames the hands take to move to it from the pose before, a step a frame (`0`: none; a swing, as fast as its steps). Up to 16 poses separated by `;` are taken in turn (the log says from which frame). With the hands posed, a cross marks each controller's grip and a line where it points, and white lines the arms' bones. |
+| `debug.vr_test_hands` | `""` | `HALO_VR_TEST_HANDS` | Hold the controllers still, for automated tests without hands: `"lx ly lz lyaw lpitch lroll, rx ry rz ryaw rpitch rroll[, grip[, buttons[, trigger[, head[, frames[, move]]]]]]"`, the left and right hands in metres right, up and forward from the recentred head and degrees of yaw (left), pitch (up) and roll (right) (a hand 10 metres or more out is not tracked), the left grip's pull (0 to 1), the buttons pressed for the pose's first 20 frames (A 1, B 2, X 4, Y 8, the right trigger 65536, the left 131072), the right trigger's pull (0 to 1), the head turned (degrees left), the frames the pose lasts (`0`: 288) and the frames the hands take to move to it from the pose before, a step a frame (`0`: none; a swing, as fast as its steps). Up to 16 poses separated by `;` are taken in turn (the log says from which frame). With the hands posed, a cross marks each controller's grip and a line where it points, and white lines the arms' bones. Below, a grenade throw scripted. |
+| `debug.vr_throw_log` | `false` | `HALO_VR_THROW_LOG` | Log each step of a grenade thrown with the left hand (`vr.grenade_throw`): the grip taken (or why it holds nothing), the swing (or why a fast hand was none), the release's speed, power and direction, and the game's throw: when it began, its animations held or moved on to their release, and the grenade's place and speed. |
 | `debug.vr_gpu_time` | `false` | `HALO_VR_GPU_TIME` | With `debug.gpu_stats`, log the GPU's time for each frame too, waiting for it at the present (which costs the overlap of the GPU and the game, and lets the GPU's clock drop: an upper bound). |
 
 `debug.test_input = "pad"` (`HALO_TEST_INPUT=pad`) puts the gamepad mode
 through its paces without a gamepad: it turns, looks up and down, fires,
 throws a grenade, holds Back (recentring) and walks, a few seconds each in
 turn, and logs each.
+
+A grenade thrown with the left hand, scripted (b30, whose first throw the
+game allows about 45 s in at 72 Hz), the right hand holding the weapon
+ahead (`R` here stands for `0.2 -0.3 0.4 0 0 0`), the head still
+(`HALO_VR_TEST_HEAD=0`), with `HALO_VR_THROW_LOG=true`:
+
+```
+HALO_VR_TEST_HANDS="-0.25 -0.45 0.15 0 0 0, R, 0, 0, 0, 0, 3200, 0;
+  -0.20 0.05 -0.10 0 30 0, R, 1, 0, 0, 0, 90, 36;
+  -0.15 0.0 0.45 0 0 0, R, 1, 0, 0, 0, 8, 8;
+  -0.12 -0.1 0.6 0 -20 0, R, 0, 0, 0, 0, 400, 6"
+```
+
+(on one line): the left hand low for 3200 frames, then taking a grenade
+and drawn back beside the head over half a second, swung 0.55 m forward
+in 8 frames (5 m/s) and let go of, which logs the swing, the game's throw
+beginning, its animation moved on to the release, and the grenade thrown
+from the hand.
 
 `debug.gpu_stats` also logs the VR frames' timing, and
 `debug.screenshot_every` writes both eyes (`eyes*.bmp`) and the HUD
@@ -1186,6 +1239,31 @@ supersampling costs as above, and multisampling the eye pass
   line as the grip is pulled, and blended onto the weapon's foregrip as
   the left hand takes it. The right index finger curls as the trigger is
   pulled, and the weapon's `frame trigger` (the pistol's) moves back.
+- The game throws a grenade in an animation: the throw button starts the
+  unit's throw animation, its third frame puts the grenade in the unit's
+  left hand, and its key frame (the cyborg's with the assault rifle: frame
+8, 0.27 s in) lets it go, from
+  just before the eyes, along the aim, at the unit's grenade velocity (let
+  go of sooner, as when a flinch cuts the throw short, more weakly). The
+  first-person weapon plays a throw of its own beside it, which lowers the
+  weapon. A grenade thrown with the left hand (`src/vr.c`,
+  `game/vr_grenade.c`): the swing presses the left trigger, so that the
+  game's own throw begins, through its input and the netcode as any throw
+  does; while the hand holds on, the throw animation (and the first-person
+  one, which marks no release of its own: the unit's frame) waits a frame
+  before its release, and when the hand lets go sooner, goes on to it at
+  once (the grenade put in the hand first if it is not there yet); the
+  grenade is then moved to the hand and its velocity turned along the
+  hand's throw, its speed the game's times the throw's power. With the
+  hands the controllers', the first-person throw is not played: the left
+  hand is the player's, and the weapon stays in the right. The hand's
+  velocity is measured over 35 ms of its poses (at their display times),
+  and the release's is the fastest of the last 0.1 s, as the hand slows
+  as it opens. While the hand throws, the player's facing turns along the
+  throw, which the netcode sends: on a client, its own copy of the
+  grenade is the one that deals damage (reported to the host), and the
+  host's copy, which the other players see, flies the same way, but at
+  the game's speed, let go of when the host's animation lets go of it.
 - With arms, the shoulders are below and beside the eyes, turned with the
   body: the heading between the head's and the hands', followed past a
   40 degree turn of the head, and slowly (so that looking about does not
