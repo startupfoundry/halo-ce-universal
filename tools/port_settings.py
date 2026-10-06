@@ -221,6 +221,8 @@ VR_SCREENS = {
             ("WORLD SCALE:", "vr.world_scale",
              [(f"{scale:g}X", f"{scale:g}") for scale in (0.75, 0.8, 0.9, 1, 1.1, 1.2, 1.25, 1.5)],
              "How large the world looks: more than 1 makes it\nlarger, and you smaller in it.", None),
+            ("HUD:", "vr.hud", [("VISOR", "visor"), ("FLAT", "flat")],
+             "On your helmet's visor, curved about your eyes,\nor a flat screen before them.", None),
             ("HUD DISTANCE:", "vr.hud_distance",
              [(f"{distance:.1f} M", f"{distance:g}") for distance in (1, 1.5, 2, 2.5, 3, 4, 5)],
              "How far in front of your eyes the HUD is.", None),
