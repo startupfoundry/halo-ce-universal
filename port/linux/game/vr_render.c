@@ -107,6 +107,7 @@ short vr_render_crosshair_offset[2];
 
 void vr_render_screen_point_end(void);
 /* vr_seat.c's */
+void vr_seat_eye(long seated_unit_index, boolean aiming, real seconds, real_point3d *position);
 void vr_seat_log_camera(real_point3d const *position, real_vector3d const *forward, real_vector3d const *up);
 
 /* ---------- maths */
@@ -272,15 +273,15 @@ boolean vr_render_camera(struct render_camera *camera, struct render_camera *ras
 	else (a cinematic, the main menu's scene) the camera's own heading */
 	base_yaw = cinematic_in_progress() || !halo_vr_aiming() ?
 		(real)atan2(camera->forward.j, camera->forward.i) : view->body_yaw;
-	if (view->vehicle_first_person && halo_vr_aiming() &&
-		(vr_render.seated_unit_index = seated_unit()) != NONE)
-	{
-		/* in a vehicle's seat (vr.vehicle_view): the eye is the seated
-		player's head, as the frame poses it between ticks, and the view is
-		level and turned as on foot; not the game's camera following the
-		vehicle, which swings about it with the aim */
-		unit_get_head_position(vr_render.seated_unit_index, &camera->position);
-	}
+	/* in a vehicle's seat (vr.vehicle_view): the eye is the seat's (where
+	the seated player's head is, as the frame poses it between ticks, or
+	held still in the vehicle: vr.seat_motion), and the view is level and
+	turned as on foot; not the game's camera following the vehicle, which
+	swings about it with the aim. Jumps between the two blink (vr_seat.c). */
+	if (view->vehicle_first_person && halo_vr_aiming())
+		vr_render.seated_unit_index = seated_unit();
+	vr_seat_eye(vr_render.seated_unit_index, halo_vr_aiming() && !cinematic_in_progress(), view->seconds,
+		&camera->position);
 	vr_render.base_position = camera->position;
 	vr_render.base_yaw = base_yaw;
 	vr_render.aim_forward = camera->forward;

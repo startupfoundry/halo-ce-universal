@@ -885,6 +885,7 @@ headset's session is opened with, apply from the next start.
 | `vr.hands` | `"arms"` | `HALO_VR_HANDS` | With `vr.aim = "controller"`: each first-person hand where its controller is (the right holding the weapon, its index finger on the trigger as far as the trigger is pulled; the left open, closing as the grip is pulled, and on a long gun's foregrip while it holds it). `"arms"`: the arms reach the hands from the shoulders (`vr.shoulders`). `"floating"`: no arms above the wrists. `"game"`: the game's arms, posed from the weapon in the right hand. A hand whose controller is not tracked is not drawn, nor its arm. |
 | `vr.shoulders` | `"0.19, -0.20, -0.07"` | `HALO_VR_SHOULDERS` | With `vr.hands = "arms"`: where each shoulder is from the eyes, in metres: out to its side, up, forward, turned with the body (which faces between the head and the hands, and follows the head past a 40 degree turn, and slowly). |
 | `vr.vehicle_view` | `"first_person"` | `HALO_VR_VEHICLE_VIEW` | `"first_person"`: in a vehicle's seat, the view is from the seated player's head, level with the horizon. `"third_person"`: the game's camera following the vehicle. |
+| `vr.seat_motion` | `"still"` | `HALO_VR_SEAT_MOTION` | With `vr.vehicle_view = "first_person"`: `"still"`, the eye stays put in the vehicle, riding with it but not with the body climbing in and out, a turret's turning or flinches, and blinks (darkens and lightens in a quarter second) where it moves between places; `"head"`, it follows the seated body's head as the game animates it. |
 | `vr.turn` | `"snap"` | `HALO_VR_TURN` | `"snap"` or `"smooth"` (with `vr.aim = "gamepad"`, `vr.gamepad_view` instead). |
 | `vr.snap_turn_angle` | `30.0` | `HALO_VR_SNAP_TURN_ANGLE` | Degrees of each snap turn. |
 | `vr.smooth_turn_speed` | `150.0` | `HALO_VR_SMOOTH_TURN_SPEED` | Degrees each second of smooth turning. |
@@ -898,7 +899,7 @@ headset's session is opened with, apply from the next start.
 | `debug.vr_test_jitter` | `0.0` | `HALO_VR_TEST_JITTER` | Move the head by up to this many millimetres (and turn it as many hundredths of a degree) at random each frame, as a worn headset moves: for automated tests of what flickers when the view barely moves. |
 | `debug.vr_test_head` | `""` | `HALO_VR_TEST_HEAD` | Hold the head still and level where it is first located (a simulated headset's head wobbles), for automated tests: `"0"`, or `"<degrees> <seconds>"` turns it left and right by as many degrees over as many seconds, smoothly (a sine of the frames' display times). |
 | `debug.vr_test_hands` | `""` | `HALO_VR_TEST_HANDS` | Hold the controllers still, for automated tests without hands: `"lx ly lz lyaw lpitch lroll, rx ry rz ryaw rpitch rroll[, grip[, buttons[, trigger[, head]]]]"`, the left and right hands in metres right, up and forward from the recentred head and degrees of yaw (left), pitch (up) and roll (right) (a hand 10 metres or more out is not tracked), the left grip's pull (0 to 1), the buttons pressed for the pose's first 20 frames (A 1, B 2, X 4, Y 8, the right trigger 65536, the left 131072), the right trigger's pull (0 to 1) and the head turned (degrees left). Poses separated by `;` are held 288 frames each in turn (the log says from which frame). With the hands posed, a cross marks each controller's grip and a line where it points, and white lines the arms' bones. |
-| `debug.vr_test_seat` | `""` | `HALO_VR_TEST_SEAT` | Get into a vehicle's seat and out again, for automated tests of the view in a seat: `"<label> <seconds> [<seconds seated>]"`, the first player gets into the seat whose label has this text in it (`"gunner"`, `"W-driver"`, `"GT-gunner"`: the Shade) that many seconds into the level, as the action button does, in a vehicle of the kind made before them three seconds earlier, and out again after as many seconds seated (10 by default). From a second before, the log says how far the view moved and turned each frame, and each phase's sums (on foot, entering, seated, exiting): with `debug.vr_test_head = "0"`, the motion the player did not make. |
+| `debug.vr_test_seat` | `""` | `HALO_VR_TEST_SEAT` | Get into a vehicle's seat and out again, for automated tests of the view in a seat: `"<label> <seconds> [<seconds seated>]"`, the first player gets into the seat whose label has this text in it (`"gunner"`, `"W-driver"`, `"GT-gunner"`: the Shade) that many seconds into the level, as the action button does, in a vehicle of the kind made before them three seconds earlier (standing at the seat's entrance from two seconds earlier), and out again after as many seconds seated (10 by default). From a second before, the log says how far the view moved and turned each frame, how dark a blink made it, and each phase's sums (on foot, entering, seated, exiting) with how much of the motion was seen (not in a blink's full darkness), and each blink: with `debug.vr_test_head = "0"`, the motion the player did not make. |
 | `debug.vr_gpu_time` | `false` | `HALO_VR_GPU_TIME` | With `debug.gpu_stats`, log the GPU's time for each frame too, waiting for it at the present (which costs the overlap of the GPU and the game, and lets the GPU's clock drop: an upper bound). |
 
 `debug.test_input = "pad"` (`HALO_TEST_INPUT=pad`) puts the gamepad mode
@@ -1007,12 +1008,31 @@ supersampling costs as above, and multisampling the eye pass
   the arm, the forearm twisted with the hand. Out of reach, the shoulder
   comes forward up to 5 cm and the arm stretches the rest. With floating
   hands, the arms are scaled to almost nothing at the wrists.
-- In a vehicle's seat (`vr.vehicle_view = "first_person"`) the eye is the
-  seated player's head marker, which the game poses between ticks as it
-  does the vehicle, and the player's body is not drawn. The view turns as
-  on foot (the stick and the head, never the vehicle): the vehicle steers
-  and aims where the controller (or head) points, and the horizon stays
-  level whatever the vehicle does.
+- In a vehicle's seat (`vr.vehicle_view = "first_person"`) the eye is in
+  the seat, and the player's body is not drawn. The game animates the
+  seated body, none of it the player's own motion: getting in sweeps the
+  head 2.7 to 3.4 m over most of a second, getting out 1.7 to 2.7 m, and a
+  turret's seat swings about the turret's pivot as it aims (where the
+  controller or head points), the Shade's eye 0.65 m from it, with flinches
+  when hit. With `vr.seat_motion = "still"` the eye is held in the
+  vehicle (its root node's frame, posed between ticks as it is drawn):
+  where it was standing as the body climbs in, then where the head is once
+  seated, until the player is out. It rides with the vehicle, but the gun
+  swivels in front of it instead of the eye about the gun. With `"head"`
+  the eye is the seated player's head marker. The view turns as on foot
+  (the stick and the head, never the vehicle): the vehicle steers and aims
+  where the controller (or head) points, and the horizon stays level
+  whatever the vehicle does.
+- Where the eye would jump more than 0.1 m (into the seat once seated, back
+  to the player's own eye once out, to the game's camera following the
+  vehicle or the dead's, and back), it blinks: the view darkens over 0.1 s
+  with the eye held, moves in the dark, and lightens over 0.15 s. The
+  darkness is a black screen flash in the eye pass, after the game's own
+  (the HUD's layer stays lit). The game's director cuts between its
+  first-person camera and the one following a vehicle in the VR mode,
+  rather than flying between them for a second (`camera_change_pause`),
+  which swept the view some 6 m, from behind the player into their head,
+  on getting out.
 - The sky is drawn about the camera at a thousandth of its size, a few
   metres away: its draws move to each eye as from the centre of the head,
   so that it is at infinity. Its draws are depth-clamped rather than
