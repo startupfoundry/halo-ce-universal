@@ -816,7 +816,9 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 	}
 #ifndef HALO_ANDROID
 	/* the game's icon, which the desktop shows for the window (on Windows
-	also halo.exe's own, port/windows/halo.rc) */
+	also halo.exe's own, port/windows/halo.rc; not the arm64 guest's, which
+	reaches no SDL surfaces) */
+#ifndef HALO_ARM64_GUEST
 	if (platform_window_icon_size)
 	{
 		SDL_Surface *icon = SDL_LoadPNG_IO(SDL_IOFromConstMem(platform_window_icon, platform_window_icon_size), true);
@@ -825,6 +827,7 @@ BOOL platform_video_initialize(unsigned long width, unsigned long height)
 			platform_log("cannot set the window's icon: %s", SDL_GetError());
 		SDL_DestroySurface(icon);
 	}
+#endif
 	platform_fullscreen_requested = platform_fullscreen_setting();
 	platform_fullscreen_kind_apply();
 #endif
