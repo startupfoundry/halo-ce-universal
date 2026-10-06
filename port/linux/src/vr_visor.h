@@ -53,16 +53,19 @@ struct vr_visor_panel
 	float distance;
 };
 
-/* the helmet's rim (vr.helmet_rim): the faceplate's frame about the visor,
+/* the helmet's rim (vr.helmet_rim): the faceplate's lip about the visor,
 drawn in each eye where it is, before it (d3d8_gl.c): its strength (0
-none), its lip's edges on a plane VR_RIM_DISTANCE before the middle of the
-head (metres: left, right, up, down) and each eye's transform from the head
+none), how far before the middle of the head it is (metres:
+vr.helmet_rim_depth), how far in from the edges of the eyes' views on that
+plane its lip begins (a fraction of them: vr.helmet_rim_reach), the edges
+(metres: left, right, up, down), and each eye's transform from the head
 (rows: x, y, z, with the translation as w) and field of view (tangents:
 left, right, up, down) */
-#define VR_RIM_DISTANCE 0.10f
 struct vr_visor_rim
 {
 	float strength;
+	float distance;
+	float reach;
 	float edges[4];
 	float eye[2][3][4];
 	float fov[2][4];
@@ -90,6 +93,8 @@ struct vr_visor_image
 	and its flash as they are full (0 to 1) */
 	int plasma;
 	float plasma_glow;
+	/* how strong the energy is (vr.visor_energy) */
+	float energy;
 	float charge, charge_level, full;
 	float perpendicular[3], parallel[3];
 	float noise_scale[2], noise_period[2], noise_direction[2][3];

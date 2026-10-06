@@ -5741,7 +5741,7 @@ static void vr_draw_visor(void)
 		"		float height = 0.5 + 0.5 * (t.y > 0.0 ? n.y : -n.y);\n"
 		"		float fill = plasma.y * (0.5 * smoothstep(level + 0.05, level - 0.05, height) +\n"
 		"			0.7 * exp(-pow((height - level) / 0.07, 2.0)));\n"
-		"		float amount = clamp(plasma.x + fill + 0.3 * plasma.z, 0.0, 1.0) *\n"
+		"		float amount = clamp(plasma.x + fill + 0.3 * plasma.z, 0.0, 1.0) * plasma.w *\n"
 		"			mix(0.06, 1.0, smoothstep(0.45, 0.97, r)) * (1.0 - shade * 0.6);\n"
 		"		light.rgb += pow(energy * amount, vec3(2.2)) * 1.0;\n"
 		"	}\n"
@@ -5833,6 +5833,7 @@ static void vr_draw_visor(void)
 			plasma[0] = look.plasma_glow;
 			plasma[1] = look.charge;
 			plasma[2] = look.full;
+			plasma[3] = look.energy;
 		}
 		for (map = 0; map < 2; map++)
 		{
@@ -5871,22 +5872,27 @@ static void vr_draw_visor(void)
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-/* The helmet's rim (vr_visor.c, vr.helmet_rim): the faceplate's frame about
+/* The helmet's rim (vr_visor.c, vr.helmet_rim): the faceplate's lip about
 the visor, drawn into both eyes' images (multiview) where it is before the
-head: a band about the visor's opening, its lip at the edges of what the
-eyes see VR_RIM_DISTANCE before the head, a rounded rectangle, receding
-from it toward the face beyond the eyes' views. Its vertices are made here
-from their index (no buffers): rings about the opening (the lip fading in
-over a degree or so, the bevel, the frame beyond), each a loop of
-segments. Dark armour, lit faintly from above along the lip. Its depth is
-the nearest, for the compositor's reprojection, where it covers the
-world. */
+head (vr.helmet_rim_depth): the visor's opening, wide and low, its lip a
+little in from the edges of what the eyes see on that plane
+(vr.helmet_rim_reach), its bevel and frame curving back toward the face
+beyond the eyes' views. Only the brow and the chin are there to see, the
+sides barely and the corners not at all: no frame closes the view in, and
+each eye sees its own side of it only, the brow and the chin with both
+eyes, in depth. Its vertices are made here from their index (no buffers):
+rings about the opening (the lip fading in over a few degrees, the bevel,
+the frame beyond), each a loop of segments. Dark armour, its bevel lighter
+than the frame behind it and its lip catching the light from above. Its
+depth is the nearest, for the compositor's reprojection, where it covers
+the world. */
 static void vr_draw_rim(void)
 {
 	enum { SEGMENTS = 128, RINGS = 4 };
 	static GLuint program;
 	static BOOL failed;
-	static GLint rows_location, fov_location, edges_location, strength_location, pass_location;
+	static GLint rows_location, fov_location, edges_location, strength_location, pass_location, distance_location;
+	static GLint reach_location;
 	static const char vertex_source[] =
 		"#version 450 core\n"
 		"#extension GL_OVR_multiview2 : require\n"
@@ -5895,10 +5901,12 @@ static void vr_draw_rim(void)
 		(tangents: left, right, up, down) */
 		"uniform vec4 rows[6];\n"
 		"uniform vec4 fov[2];\n"
-		/* the lip's edges VR_RIM_DISTANCE before the head (metres: left,
-		right, up, down) and that distance */
+		/* the edges of the eyes' views on the lip's plane (metres: left,
+		right, up, down), that plane's distance before the head */
 		"uniform vec4 edges;\n"
 		"uniform float distance;\n"
+		/* (how far in from the edges its lip begins: a fraction of them) */
+		"uniform float reach;\n"
 		"out vec2 around;\n"
 		"out float lip;\n"
 		"out float ring_alpha;\n"
@@ -5906,10 +5914,10 @@ static void vr_draw_rim(void)
 		"out float presence;\n"
 		"const int SEGMENTS = 128;\n"
 		/* (the rings: out from the opening, toward the face) */
-		"const float out_by[4] = float[4](0.93, 0.975, 1.03, 1.7);\n"
+		"const float out_by[4] = float[4](0.0, 0.0, 1.03, 1.7);\n"
 		"const float nearer[4] = float[4](1.0, 0.99, 0.9, 0.5);\n"
 		"const float alpha[4] = float[4](0.0, 0.5, 0.85, 0.85);\n"
-		"const float shading[4] = float[4](1.0, 1.0, 0.7, 0.4);\n"
+		"const float shading[4] = float[4](1.7, 1.0, 0.55, 0.3);\n"
 		"const ivec2 corners[6] = ivec2[6](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(0, 1), ivec2(1, 0), ivec2(1, 1));\n"
 		"void main()\n"
 		"{\n"
@@ -5926,7 +5934,8 @@ static void vr_draw_rim(void)
 		"		(1.0 - 0.04 * u.x * u.x));\n"
 		/* the brow and the chin, the sides barely, the corners not at all */
 		"	presence = 0.85 * pow(abs(c.y), 4.0) + 0.2 * pow(abs(c.x), 8.0);\n"
-		"	vec3 v = vec3(point * out_by[ring], -distance) * nearer[ring];\n"
+		"	float by = ring == 0 ? 1.0 - reach : ring == 1 ? 1.0 - 0.36 * reach : out_by[ring];\n"
+		"	vec3 v = vec3(point * by, -distance) * nearer[ring];\n"
 		"	int eye = int(gl_ViewID_OVR);\n"
 		"	vec3 e = vec3(dot(rows[eye * 3], vec4(v, 1.0)), dot(rows[eye * 3 + 1], vec4(v, 1.0)),\n"
 		"		dot(rows[eye * 3 + 2], vec4(v, 1.0)));\n"
@@ -5958,9 +5967,9 @@ static void vr_draw_rim(void)
 		"		discard;\n"
 		/* dark armour, olive in the dark; the lip catching the light from
 		above */
-		"	vec3 armour = vec3(0.050, 0.056, 0.044) * ring_shade;\n"
+		"	vec3 armour = vec3(0.085, 0.092, 0.075) * ring_shade;\n"
 		"	float facing = max(dot(normalize(around + vec2(0.0, 1e-4)), normalize(vec2(-0.35, 1.0))), 0.0);\n"
-		"	vec3 glint = vec3(0.62, 0.62, 0.58) * 0.14 * lip * lip * pow(facing, 3.0) * presence * strength;\n"
+		"	vec3 glint = vec3(0.62, 0.62, 0.58) * 0.32 * pow(lip, 3.0) * pow(facing, 3.0) * presence * strength;\n"
 		"	colour = vec4(armour * a + (depth_pass > 0.5 ? vec3(0.0) : glint), a);\n"
 		"}\n";
 	struct vr_visor_rim rim;
@@ -5993,7 +6002,8 @@ static void vr_draw_rim(void)
 		strength_location = glGetUniformLocation(program, "strength");
 		pass_location = glGetUniformLocation(program, "depth_pass");
 		glUseProgram(program);
-		glUniform1f(glGetUniformLocation(program, "distance"), VR_RIM_DISTANCE);
+		distance_location = glGetUniformLocation(program, "distance");
+		reach_location = glGetUniformLocation(program, "reach");
 	}
 	/* the eyes' depth (as vr_copy_depth finds it) */
 	scale[0] = screen_scale[0];
@@ -6030,6 +6040,8 @@ static void vr_draw_rim(void)
 	glUniform4fv(fov_location, 2, rim.fov[0]);
 	glUniform4fv(edges_location, 1, rim.edges);
 	glUniform1f(strength_location, rim.strength);
+	glUniform1f(distance_location, rim.distance);
+	glUniform1f(reach_location, rim.reach);
 	glUniform1f(pass_location, 0.0f);
 	glDrawArrays(GL_TRIANGLES, 0, (RINGS - 1) * SEGMENTS * 6);
 	if (depth)
