@@ -16,6 +16,7 @@ app's, and the host is a Linux executable instead of an app's library:
 Refer to "64-bit ARM" in port/linux/README.md.
 """
 
+import hashlib
 import json
 import platform
 import subprocess
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .android_build import GUEST_ABI_FLAGS, SDL_TAG, TOML_DIR, fetch_third_party, generate_guest_image
+from .linux_sysroot import download
 from .linux_build import (MBEDTLS_DIR, MINIUPNPC_DEFINES, MINIUPNPC_DIR, compile_launcher, miniupnpc_sources,
                           updater_defines)
 from .ninja_syntax import Writer
@@ -37,13 +39,42 @@ SDL_DIR = THIRD_PARTY / "SDL3"
 # the system's OpenGL ES and EGL headers (libgles-dev and libegl-dev on
 # Debian and Ubuntu, mesa on Arch Linux)
 GL_HEADERS = Path("/usr/include")
-# the Khronos OpenXR headers, for the VR build's host (port/linux/arm64/host_vr.c)
-OPENXR_DIR = Path("port/third_party/openxr")
+# The Khronos OpenXR headers, for the VR build's host (port/linux/arm64/host_vr.c),
+# downloaded by the VR build when it is configured, as the OpenXR SDK has them
+# (Apache-2.0 OR MIT). The host loads the OpenXR runtime itself, so the build
+# needs no OpenXR package.
+OPENXR_DIR = THIRD_PARTY / "openxr"
+OPENXR_TAG = "release-1.1.63"
+OPENXR_URLS = [
+    "https://raw.githubusercontent.com/KhronosGroup/OpenXR-SDK/{tag}/include/openxr/{name}",
+    "https://cdn.jsdelivr.net/gh/KhronosGroup/OpenXR-SDK@{tag}/include/openxr/{name}",
+]
+OPENXR_HEADERS = {
+    "openxr.h": "17e8e334a7ad0c6933b31143330d4771010e393df5d5d9d08566eb15bb171a15",
+    "openxr_platform.h": "f17e6d752e0065ede9f2a4c8932155acff96462306a2468a67a6ad77484641d8",
+    "openxr_platform_defines.h": "a458ba5777415f2de518fdcdcc87fcf8651ba0468c9f69a101378672aad80946",
+    "openxr_loader_negotiation.h": "ebcca0946b4b738ebee41943b821abe4df518b3a37766e0ce6883bcefce65124",
+}
 
 # the Android guest's, with the desktop's code paths (no HALO_ANDROID)
 LINUX_ARM64_GUEST_ABI_FLAGS = [flag for flag in GUEST_ABI_FLAGS if flag != "-DHALO_ANDROID=1"]
 
 HOST_LIBRARIES = ["SDL3", "GLESv2", "EGL", "m", "dl", "pthread"]
+
+
+def fetch_openxr_headers(openxr_dir: Path = OPENXR_DIR) -> None:
+    """Download the OpenXR headers into openxr_dir/openxr (configure time,
+    once; a header whose SHA-256 is wrong is downloaded again)."""
+    include = openxr_dir / "openxr"
+    include.mkdir(parents=True, exist_ok=True)
+    for name, digest in OPENXR_HEADERS.items():
+        header = include / name
+        if header.is_file() and hashlib.sha256(header.read_bytes()).hexdigest() == digest:
+            continue
+        print(f"Downloading the OpenXR SDK's {name} ({OPENXR_TAG})")
+        data = download([url.format(tag=OPENXR_TAG, name=name) for url in OPENXR_URLS], digest)
+        header.with_suffix(".tmp").write_bytes(data)
+        header.with_suffix(".tmp").replace(header)
 
 
 def is_linux_arm64() -> bool:
@@ -82,6 +113,11 @@ def generate_linux_arm64_build(n: Writer, sln: Any) -> None:
         abi_flags.remove("-DHALO_GLES=1")
         host_defines.append("-DHALO_DESKTOP_GL=1")
     if vr:
+        try:
+            fetch_openxr_headers()
+        except (RuntimeError, OSError) as error:
+            print(f"Linux arm64 build disabled: cannot fetch the OpenXR headers ({error})", file=sys.stderr)
+            return
         abi_flags.append("-DHALO_VR=1")
         host_defines.append("-DHALO_VR=1")
 

@@ -983,7 +983,9 @@ with the head tracked in 6 degrees of freedom. It was made on a Steam Frame
 with SteamVR. The VR build draws with desktop OpenGL 4.5
 (`--linux-arm64-gl=desktop`, which `--vr` implies); it needs no OpenXR
 package, as it loads the active runtime itself (or a
-`libopenxr_loader.so.1` where there is one).
+`libopenxr_loader.so.1` where there is one). Configuring it downloads the
+OpenXR SDK's four headers (to `build/linux_arm64/third_party/openxr`,
+checked against their SHA-256 in `tools/linux_arm64_build.py`).
 
 To play, start SteamVR, then start `build/linux_arm64/halo` (from a
 terminal of the headset's desktop session, or as a non-Steam game in
