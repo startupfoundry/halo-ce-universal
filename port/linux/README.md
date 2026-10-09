@@ -990,6 +990,10 @@ terminal of the headset's desktop session, or as a non-Steam game in
 Steam). Without a runtime or a headset the game plays flat, in its window.
 `vr.enabled = false` (or `HALO_VR=0`) plays flat too.
 
+The VR build doesn't update itself (`update.auto` has no effect): the
+releases it would update to have no VR mode. Install a new VR build by
+hand.
+
 ### Controls
 
 The Steam Frame's controllers are the halves of an Xbox controller:

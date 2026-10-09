@@ -561,6 +561,11 @@ void updater_start(void)
 		return;
 	*slash = 0;
 	updater_clean_up();
+#ifdef HALO_VR
+	/* (never for the VR build: the releases it would update to have no VR
+	mode, and would replace it) */
+	return;
+#endif
 	/* (not for builds without a number, the player's no, or runs nobody is
 	watching, but for a test with its answer) */
 	if (HALO_BUILD_NUMBER <= 0 || !config_boolean("update.auto") ||
